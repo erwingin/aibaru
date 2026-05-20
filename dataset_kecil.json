@@ -1,0 +1,102 @@
+{
+  "name": "kumar_tiny_brain_v2",
+  "task": "sentence_classification",
+  "vocab": [
+    "halo",
+    "hai",
+    "hello",
+    "bos",
+    "siapa",
+    "kamu",
+    "nama",
+    "aku",
+    "adalah",
+    "salah",
+    "jawaban",
+    "ngaco",
+    "benar",
+    "iya",
+    "betul",
+    "setuju",
+    "aktif",
+    "kumar"
+  ],
+  "labels": [
+    "sapa",
+    "identitas",
+    "koreksi",
+    "setuju"
+  ],
+  "samples": [
+    {
+      "input": "halo",
+      "target": "sapa"
+    },
+    {
+      "input": "halo bos",
+      "target": "sapa"
+    },
+    {
+      "input": "hai",
+      "target": "sapa"
+    },
+    {
+      "input": "hello",
+      "target": "sapa"
+    },
+    {
+      "input": "siapa kamu",
+      "target": "identitas"
+    },
+    {
+      "input": "nama kamu siapa",
+      "target": "identitas"
+    },
+    {
+      "input": "kamu siapa",
+      "target": "identitas"
+    },
+    {
+      "input": "kumar siapa",
+      "target": "identitas"
+    },
+    {
+      "input": "jawaban kamu salah",
+      "target": "koreksi"
+    },
+    {
+      "input": "salah",
+      "target": "koreksi"
+    },
+    {
+      "input": "jawaban ngaco",
+      "target": "koreksi"
+    },
+    {
+      "input": "kamu ngaco",
+      "target": "koreksi"
+    },
+    {
+      "input": "benar",
+      "target": "setuju"
+    },
+    {
+      "input": "iya benar",
+      "target": "setuju"
+    },
+    {
+      "input": "betul",
+      "target": "setuju"
+    },
+    {
+      "input": "aku setuju",
+      "target": "setuju"
+    }
+  ],
+  "responses": {
+    "sapa": "Halo Bos, saya aktif.",
+    "identitas": "Saya Kumar kecil, otak mandiri versi kalimat.",
+    "koreksi": "Baik Bos, saya mengerti bahwa jawaban tadi salah.",
+    "setuju": "Siap Bos, berarti jalur ini benar."
+  }
+}
