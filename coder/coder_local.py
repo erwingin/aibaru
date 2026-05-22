@@ -179,23 +179,22 @@ if __name__ == "__main__":
 
 def ask_openai_local(prompt):
     payload = {
-        "model": CODER_MODEL,
-        "messages": [
-            {
-                "role": "system",
-                "content": "Kamu adalah model coding lokal. Jawab tugas coding dengan kode yang benar, ringkas, dan langsung bisa dijalankan. Jangan mengulang instruksi user."
-            },
-            {
-                "role": "user",
-                "content": build_coder_prompt(prompt)
-            }
-        ],
-        "temperature": 0.05,
-        "top_p": 0.75,
-        "max_tokens": 450,
-        "repeat_penalty": 1.18,
-        "stream": False
-    }
+    "model": CODER_MODEL,
+    "messages": [
+        {
+            "role": "system",
+            "content": "Kamu adalah model coding lokal. Jawab dengan kode yang benar, ringkas, dan langsung bisa dijalankan. Jangan mengulang instruksi user."
+        },
+        {
+            "role": "user",
+            "content": build_coder_prompt(prompt)
+        }
+    ],
+    "temperature": 0.2,
+    "top_p": 0.85,
+    "max_tokens": 700,
+    "repeat_penalty": 1.12,
+}
 
     data = json.dumps(payload).encode("utf-8")
 
