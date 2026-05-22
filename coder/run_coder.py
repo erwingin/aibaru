@@ -1,7 +1,7 @@
+import os
 import sys
 from pathlib import Path
 
-# Agar bisa import coder_local.py dari folder coder
 CURRENT_DIR = Path(__file__).resolve().parent
 sys.path.append(str(CURRENT_DIR))
 
@@ -10,7 +10,9 @@ from coder_local import ask_coder
 
 def main():
     print("Kumar Coder aktif.")
-    print("Mode sekarang: dummy backend")
+    print("Backend:", os.environ.get("CODER_BACKEND", "dummy"))
+    print("Model  :", os.environ.get("CODER_MODEL", "local-coder"))
+    print()
     print("Perintah:")
     print("- ketik tugas coding")
     print("- keluar = berhenti")

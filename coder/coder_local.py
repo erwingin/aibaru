@@ -2,9 +2,26 @@ import json
 import os
 import time
 import uuid
+import urllib.request
+import urllib.error
 
 
 CODE_MEMORY_FILE = "code_memory.jsonl"
+
+CODER_BACKEND = os.environ.get("CODER_BACKEND", "dummy")
+CODER_MODEL = os.environ.get("CODER_MODEL", "local-coder")
+
+# Untuk llama-cpp-python server / llama.cpp server OpenAI compatible
+CODER_OPENAI_URL = os.environ.get(
+    "CODER_OPENAI_URL",
+    "http://127.0.0.1:8000/v1/chat/completions"
+)
+
+# Untuk Ollama
+OLLAMA_URL = os.environ.get(
+    "OLLAMA_URL",
+    "http://127.0.0.1:11434/api/generate"
+)
 
 
 def make_id(prefix="code"):
@@ -13,19 +30,36 @@ def make_id(prefix="code"):
     return f"{prefix}_{timestamp}_{random_part}"
 
 
-def save_code_memory(task, result, mode="dummy"):
+def save_code_memory(task, result, mode="unknown", meta=None):
     item = {
         "schema_version": "code_1.0",
         "id": make_id("code_memory"),
         "record_type": "code_result",
         "time": time.time(),
         "mode": mode,
+        "model": CODER_MODEL,
         "task": task,
-        "result": result
+        "result": result,
+        "meta": meta or {}
     }
 
     with open(CODE_MEMORY_FILE, "a", encoding="utf-8") as f:
         f.write(json.dumps(item, ensure_ascii=False) + "\n")
+
+
+def build_coder_prompt(user_task):
+    return f"""Kamu adalah Kumar Coder, asisten coding lokal.
+
+Tugas:
+{user_task}
+
+Aturan:
+- Jawab dalam bahasa Indonesia singkat.
+- Jika user meminta kode, berikan kode lengkap yang bisa langsung dijalankan.
+- Jika ada error, jelaskan penyebab dan perbaikannya.
+- Jangan mengarang file yang tidak diminta.
+- Fokus ke Python, JSON, automation, CLI, dan debugging.
+"""
 
 
 def dummy_code_answer(prompt):
@@ -76,8 +110,7 @@ if __name__ == "__main__":
 """
 
     return """# Kumar Coder dummy mode
-# Model coder lokal belum dipasang.
-# Nanti bagian ini akan diganti dengan model kecil seperti Qwen Coder atau DeepSeek Coder.
+# Backend model coder lokal belum aktif.
 
 def main():
     print("Tugas diterima, tapi backend model coder belum aktif.")
@@ -88,11 +121,107 @@ if __name__ == "__main__":
 """
 
 
+def ask_openai_local(prompt):
+    payload = {
+        "model": CODER_MODEL,
+        "messages": [
+            {
+                "role": "system",
+                "content": "Kamu adalah Kumar Coder, model lokal khusus coding."
+            },
+            {
+                "role": "user",
+                "content": build_coder_prompt(prompt)
+            }
+        ],
+        "temperature": 0.2,
+        "top_p": 0.9,
+        "max_tokens": 900,
+        "stream": False
+    }
+
+    data = json.dumps(payload).encode("utf-8")
+
+    req = urllib.request.Request(
+        CODER_OPENAI_URL,
+        data=data,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": "Bearer local"
+        },
+        method="POST"
+    )
+
+    with urllib.request.urlopen(req, timeout=180) as resp:
+        raw = resp.read().decode("utf-8")
+        result = json.loads(raw)
+
+    return result["choices"][0]["message"]["content"].strip()
+
+
+def ask_ollama(prompt):
+    payload = {
+        "model": CODER_MODEL,
+        "prompt": build_coder_prompt(prompt),
+        "stream": False,
+        "options": {
+            "temperature": 0.2,
+            "top_p": 0.9
+        }
+    }
+
+    data = json.dumps(payload).encode("utf-8")
+
+    req = urllib.request.Request(
+        OLLAMA_URL,
+        data=data,
+        headers={
+            "Content-Type": "application/json"
+        },
+        method="POST"
+    )
+
+    with urllib.request.urlopen(req, timeout=180) as resp:
+        raw = resp.read().decode("utf-8")
+        result = json.loads(raw)
+
+    return result.get("response", "").strip()
+
+
 def ask_coder(prompt):
-    """
-    Untuk sekarang ini masih dummy backend.
-    Nanti fungsi ini yang akan kita sambungkan ke model coder lokal.
-    """
-    result = dummy_code_answer(prompt)
-    save_code_memory(prompt, result, mode="dummy")
-    return result
+    try:
+        if CODER_BACKEND == "openai_local":
+            result = ask_openai_local(prompt)
+            save_code_memory(prompt, result, mode="openai_local")
+            return result
+
+        if CODER_BACKEND == "ollama":
+            result = ask_ollama(prompt)
+            save_code_memory(prompt, result, mode="ollama")
+            return result
+
+        result = dummy_code_answer(prompt)
+        save_code_memory(prompt, result, mode="dummy")
+        return result
+
+    except urllib.error.URLError as e:
+        result = (
+            "[Kumar Coder] Backend model lokal belum aktif atau tidak bisa dihubungi.\n"
+            f"Backend: {CODER_BACKEND}\n"
+            f"Error: {e}\n\n"
+            "Fallback ke dummy backend:\n\n"
+            + dummy_code_answer(prompt)
+        )
+        save_code_memory(prompt, result, mode="fallback_dummy", meta={"error": str(e)})
+        return result
+
+    except Exception as e:
+        result = (
+            "[Kumar Coder] Terjadi error saat memanggil backend.\n"
+            f"Backend: {CODER_BACKEND}\n"
+            f"Error: {e}\n\n"
+            "Fallback ke dummy backend:\n\n"
+            + dummy_code_answer(prompt)
+        )
+        save_code_memory(prompt, result, mode="fallback_dummy", meta={"error": str(e)})
+        return result
