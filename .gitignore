@@ -1,2 +1,37 @@
+# secrets
 .env
-memory_guru.json
+
+# python cache
+__pycache__/
+*.pyc
+
+# runtime brain
+brain.json
+brain_gen.json
+brain_gen_best.json
+brain_gen_last.json
+
+# runtime memory
+memory_guru.jsonl
+memory_koreksi.jsonl
+knowledge_memory.jsonl
+reflection_log.jsonl
+verifier_log.jsonl
+label_merge.jsonl
+
+# backup/runtime folders
+backup_brain/
+old_broken_data/
+
+# generative dataset
+gen_dataset.jsonl
+gen_train_log.jsonl
+imagination_pool.jsonl
+
+# coder memory
+code_memory.jsonl
+code_tasks.jsonl
+
+# local models
+models/
+*.gguf
