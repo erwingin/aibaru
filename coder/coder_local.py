@@ -48,19 +48,75 @@ def save_code_memory(task, result, mode="unknown", meta=None):
 
 
 def build_coder_prompt(user_task):
-    return f"""Kamu adalah Kumar Coder, asisten coding lokal.
-
-Tugas:
+    return f"""TUGAS:
 {user_task}
 
-Aturan:
-- Jawab dalam bahasa Indonesia singkat.
-- Jika user meminta kode, berikan kode lengkap yang bisa langsung dijalankan.
-- Jika ada error, jelaskan penyebab dan perbaikannya.
-- Jangan mengarang file yang tidak diminta.
-- Fokus ke Python, JSON, automation, CLI, dan debugging.
+FORMAT JAWABAN:
+Tulis KODE PYTHON SAJA.
+Jangan pakai markdown.
+Jangan pakai ```python.
+Jangan menulis penjelasan panjang.
+Jangan menulis "Aturan", "Contoh Penggunaan", atau "Kesimpulan".
+
+ATURAN KODE:
+- Kode harus bisa langsung dijalankan.
+- Pakai encoding="utf-8" saat membaca file.
+- Jika membaca JSONL, baca baris per baris.
+- Untuk JSONL, gunakan json.loads(line), bukan json.load(file).
+- Jika ada baris rusak, skip baris itu dengan try/except.
+- Print total data valid jika diminta.
+
+KODE:
 """
 
+def clean_code_output(text):
+    text = text.strip()
+
+    if "```python" in text:
+        text = text.split("```python", 1)[1]
+        if "```" in text:
+            text = text.split("```", 1)[0]
+
+    elif "```" in text:
+        text = text.split("```", 1)[1]
+        if "```" in text:
+            text = text.split("```", 1)[0]
+
+    # Potong kalau model mulai menjelaskan setelah kode
+    stop_markers = [
+        "\nUntuk menjalankan",
+        "\n###",
+        "\nAturan:",
+        "\nContoh",
+        "\nKesimpulan",
+    ]
+
+    for marker in stop_markers:
+        if marker in text:
+            text = text.split(marker, 1)[0]
+
+    return text.strip()
+
+def basic_code_warning(task, code):
+    warnings = []
+
+    task_lower = task.lower()
+
+    if "jsonl" in task_lower:
+        if "json.load(" in code:
+            warnings.append(
+                "PERINGATAN: Kode memakai json.load(), padahal JSONL harus dibaca baris per baris dengan json.loads(line)."
+            )
+
+        if "json.loads(line)" not in code:
+            warnings.append(
+                "PERINGATAN: Kode belum terlihat memakai json.loads(line) untuk membaca JSONL."
+            )
+
+    if warnings:
+        return "\n\n# " + "\n# ".join(warnings)
+
+    return ""
 
 def dummy_code_answer(prompt):
     prompt_lower = prompt.lower()
@@ -127,16 +183,17 @@ def ask_openai_local(prompt):
         "messages": [
             {
                 "role": "system",
-                "content": "Kamu adalah Kumar Coder, model lokal khusus coding."
+                "content": "Kamu adalah model coding lokal. Jawab tugas coding dengan kode yang benar, ringkas, dan langsung bisa dijalankan. Jangan mengulang instruksi user."
             },
             {
                 "role": "user",
                 "content": build_coder_prompt(prompt)
             }
         ],
-        "temperature": 0.2,
-        "top_p": 0.9,
-        "max_tokens": 900,
+        "temperature": 0.05,
+        "top_p": 0.75,
+        "max_tokens": 450,
+        "repeat_penalty": 1.18,
         "stream": False
     }
 
@@ -192,11 +249,15 @@ def ask_coder(prompt):
     try:
         if CODER_BACKEND == "openai_local":
             result = ask_openai_local(prompt)
+            result = clean_code_output(result)
+            result = result + basic_code_warning(prompt, result)
             save_code_memory(prompt, result, mode="openai_local")
             return result
 
         if CODER_BACKEND == "ollama":
             result = ask_ollama(prompt)
+            result = clean_code_output(result)
+            result = result + basic_code_warning(prompt, result)
             save_code_memory(prompt, result, mode="ollama")
             return result
 
