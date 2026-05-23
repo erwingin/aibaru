@@ -2,6 +2,8 @@ import json
 import os
 import time
 import uuid
+import json
+import os
 import urllib.request
 import urllib.error
 
@@ -46,10 +48,65 @@ def save_code_memory(task, result, mode="unknown", meta=None):
     with open(CODE_MEMORY_FILE, "a", encoding="utf-8") as f:
         f.write(json.dumps(item, ensure_ascii=False) + "\n")
 
+def load_code_lessons(max_items=5):
+    path = "code_lessons.jsonl"
 
-def build_coder_prompt(user_task):
+    if not os.path.exists(path):
+        return ""
+
+    lessons = []
+
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            lines = f.readlines()[-max_items:]
+
+        for line in lines:
+            try:
+                item = json.loads(line)
+
+                problems = item.get("problems", [])
+                must_fix = item.get("must_fix", [])
+
+                if problems:
+                    lessons.append("Kesalahan lama: " + "; ".join(problems[:3]))
+
+                if must_fix:
+                    lessons.append("Wajib diperbaiki: " + "; ".join(must_fix[:3]))
+
+            except Exception:
+                continue
+
+    except Exception:
+        return ""
+
+    if not lessons:
+        return ""
+
+    return "\nPELAJARAN DARI KESALAHAN SEBELUMNYA:\n" + "\n".join(
+        f"- {lesson}" for lesson in lessons[-8:]
+    )
+
+def build_coder_prompt(user_task, feedback=None, previous_code=None):
+    lessons = load_code_lessons()
+    extra = ""
+
+    if feedback:
+        extra += "\nKODE SEBELUMNYA SALAH.\n"
+        extra += "Perbaiki berdasarkan error validator berikut:\n"
+        for item in feedback:
+            extra += f"- {item}\n"
+
+    if previous_code:
+        extra += "\nKode sebelumnya:\n"
+        extra += previous_code[:2000]
+        extra += "\n"
+
     return f"""TUGAS:
 {user_task}
+
+{lessons}
+
+{extra}
 
 FORMAT JAWABAN:
 Tulis KODE PYTHON SAJA.
@@ -58,15 +115,18 @@ Jangan pakai ```python.
 Jangan menulis penjelasan panjang.
 Jangan menulis "Aturan", "Contoh Penggunaan", atau "Kesimpulan".
 
-ATURAN KODE:
+ATURAN WAJIB:
 - Kode harus bisa langsung dijalankan.
 - Pakai encoding="utf-8" saat membaca file.
-- Jika membaca JSONL, baca baris per baris.
-- Untuk JSONL, gunakan json.loads(line), bukan json.load(file).
-- Jika ada baris rusak, skip baris itu dengan try/except.
-- Print total data valid jika diminta.
+- Jika tugas menyebut JSONL, file harus dibaca baris per baris.
+- Untuk JSONL, gunakan json.loads(line) atau json.loads(line.strip()), bukan json.load(file).
+- Jika tugas meminta CLI, gunakan argparse.
+- Jika tugas meminta semua file dalam folder, gunakan os.listdir, glob, atau pathlib.
+- Jika tugas meminta output.jsonl, wajib tulis data valid ke file output.
+- Jika ada baris rusak, skip dengan try/except json.JSONDecodeError.
+- Print total data sesuai permintaan user.
 
-KODE:
+KODE PYTHON:
 """
 
 def clean_code_output(text):
@@ -192,7 +252,7 @@ def ask_openai_local(prompt):
     ],
     "temperature": 0.2,
     "top_p": 0.85,
-    "max_tokens": 700,
+    "max_tokens": 1200,
     "repeat_penalty": 1.12,
 }
 

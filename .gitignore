@@ -35,3 +35,11 @@ code_tasks.jsonl
 # local models
 models/
 *.gguf
+
+coder_arena_log.jsonl
+last_kumar_code.py
+
+coder_arena_log.jsonl
+code_lessons.jsonl
+last_kumar_code.py
+code_memory.jsonl
