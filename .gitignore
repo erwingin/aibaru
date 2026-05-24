@@ -46,3 +46,5 @@ code_memory.jsonl
 
 .env.local
 .env
+
+code_mistakes.jsonl

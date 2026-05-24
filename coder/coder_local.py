@@ -157,6 +157,83 @@ def clean_code_output(text):
 
     return text.strip()
 
+def validate_code(task, code):
+    warnings = []
+
+    task_lower = (task or "").lower()
+    code_text = code or ""
+
+    if "jsonl" in task_lower:
+        if "json.load(" in code_text:
+            warnings.append(
+                "Kode memakai json.load(), padahal JSONL harus dibaca baris per baris dengan json.loads(line)."
+            )
+
+        if "json.loads(line)" not in code_text and "json.loads(line.strip())" not in code_text:
+            warnings.append(
+                "Kode belum memakai json.loads(line) atau json.loads(line.strip()) untuk membaca JSONL."
+            )
+
+        if "json.dump(" in code_text and "\\n" not in code_text:
+            warnings.append(
+                "Output JSONL belum menulis newline. Gunakan output.write(json.dumps(data, ensure_ascii=False) + '\\n')."
+            )
+
+    if "argparse" in task_lower:
+        if "argparse" not in code_text:
+            warnings.append(
+                "Kode belum memakai argparse, padahal user meminta CLI."
+            )
+
+    if "semua file" in task_lower or "folder" in task_lower:
+        has_folder_scan = (
+            "os.listdir" in code_text
+            or ".glob(" in code_text
+            or "glob.glob" in code_text
+            or ".iterdir(" in code_text
+        )
+
+        if not has_folder_scan:
+            warnings.append(
+                "Kode belum mencari semua file dalam folder."
+            )
+
+    if "output.jsonl" in task_lower or "gabungkan" in task_lower:
+        has_output_write = (
+            "open(" in code_text
+            and ("'w'" in code_text or '"w"' in code_text or "'a'" in code_text or '"a"' in code_text)
+        )
+
+        if not has_output_write:
+            warnings.append(
+                "Kode belum terlihat menulis hasil gabungan ke file output."
+            )
+
+    if "total file" in task_lower:
+        if "total_files" not in code_text and "total_file" not in code_text:
+            warnings.append(
+                "Kode belum menghitung total file."
+            )
+
+    if "valid" in task_lower:
+        if "valid" not in code_text.lower():
+            warnings.append(
+                "Kode belum menghitung total baris valid."
+            )
+
+    if "rusak" in task_lower or "invalid" in task_lower:
+        if "rusak" not in code_text.lower() and "invalid" not in code_text.lower() and "bad" not in code_text.lower():
+            warnings.append(
+                "Kode belum menghitung total baris rusak/invalid."
+            )
+
+    if 'open(file_path, "w"' in code_text or "open(file_path, 'w'" in code_text:
+        warnings.append(
+            "Berbahaya: kode membuka file input dengan mode write."
+        )
+
+    return warnings
+
 def basic_code_warning(task, code):
     warnings = []
 
@@ -168,10 +245,15 @@ def basic_code_warning(task, code):
                 "PERINGATAN: Kode memakai json.load(), padahal JSONL harus dibaca baris per baris dengan json.loads(line)."
             )
 
-        if "json.loads(line)" not in code:
+        if "json.loads(line)" not in code and "json.loads(line.strip())" not in code:
             warnings.append(
-                "PERINGATAN: Kode belum terlihat memakai json.loads(line) untuk membaca JSONL."
+                "PERINGATAN: Kode belum terlihat memakai json.loads(line) atau json.loads(line.strip()) untuk membaca JSONL."
             )
+        if "output.jsonl" in task_lower or "jsonl" in task_lower:
+            if "json.dump(" in code and "\\n" not in code:
+                warnings.append(
+                    "PERINGATAN: Output JSONL harus menulis newline tiap data. Gunakan out.write(json.dumps(data, ensure_ascii=False) + '\\n')."
+                )
 
     if warnings:
         return "\n\n# " + "\n# ".join(warnings)
@@ -268,7 +350,7 @@ def ask_openai_local(prompt):
         method="POST"
     )
 
-    with urllib.request.urlopen(req, timeout=180) as resp:
+    with urllib.request.urlopen(req, timeout=300) as resp:
         raw = resp.read().decode("utf-8")
         result = json.loads(raw)
 
@@ -325,23 +407,30 @@ def ask_coder(prompt):
         return result
 
     except urllib.error.URLError as e:
-        result = (
-            "[Kumar Coder] Backend model lokal belum aktif atau tidak bisa dihubungi.\n"
-            f"Backend: {CODER_BACKEND}\n"
-            f"Error: {e}\n\n"
-            "Fallback ke dummy backend:\n\n"
-            + dummy_code_answer(prompt)
+        result = f"""# SOURCE: openai_local_error
+    # Backend model lokal belum aktif atau tidak bisa dihubungi.
+    # Backend: {CODER_BACKEND}
+    # Error: {e}
+    # 
+    # Dummy fallback dimatikan agar Kumar tidak belajar dari jawaban palsu.
+    """
+        save_code_memory(
+            prompt,
+            result,
+            mode="openai_local_error",
+            meta={"error": str(e)}
         )
-        save_code_memory(prompt, result, mode="fallback_dummy", meta={"error": str(e)})
         return result
 
     except Exception as e:
-        result = (
-            "[Kumar Coder] Terjadi error saat memanggil backend.\n"
-            f"Backend: {CODER_BACKEND}\n"
-            f"Error: {e}\n\n"
-            "Fallback ke dummy backend:\n\n"
-            + dummy_code_answer(prompt)
+        result = f"""# SOURCE: openai_local_error
+    # Backend lokal gagal menjawab.
+    # Error: {e}
+    """
+        save_code_memory(
+            prompt,
+            result,
+            mode="openai_local_error",
+            meta={"error": str(e)}
         )
-        save_code_memory(prompt, result, mode="fallback_dummy", meta={"error": str(e)})
         return result
