@@ -1,64 +1,76 @@
 import json
 import os
-import time
-import uuid
-import json
-import os
-import urllib.request
-import urllib.error
-
-
-CODE_MEMORY_FILE = "code_memory.jsonl"
+import re
+import requests
 
 CODER_BACKEND = os.environ.get("CODER_BACKEND", "dummy")
-CODER_MODEL = os.environ.get("CODER_MODEL", "local-coder")
-
-# Untuk llama-cpp-python server / llama.cpp server OpenAI compatible
+CODER_MODEL = os.environ.get("CODER_MODEL", "qwen2.5-coder-3b")
 CODER_OPENAI_URL = os.environ.get(
     "CODER_OPENAI_URL",
     "http://127.0.0.1:8000/v1/chat/completions"
 )
 
-# Untuk Ollama
-OLLAMA_URL = os.environ.get(
-    "OLLAMA_URL",
-    "http://127.0.0.1:11434/api/generate"
-)
+CODE_LESSONS = "code_lessons.jsonl"
 
 
-def make_id(prefix="code"):
-    timestamp = time.strftime("%Y%m%d_%H%M%S")
-    random_part = uuid.uuid4().hex[:8]
-    return f"{prefix}_{timestamp}_{random_part}"
+def extract_code(text):
+    text = text or ""
+    text = text.strip()
+
+    # Ambil isi ```python ... ``` kalau model memakai markdown.
+    match = re.search(r"```(?:python)?\s*(.*?)```", text, re.DOTALL | re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
+
+    return text
 
 
-def save_code_memory(task, result, mode="unknown", meta=None):
-    item = {
-        "schema_version": "code_1.0",
-        "id": make_id("code_memory"),
-        "record_type": "code_result",
-        "time": time.time(),
-        "mode": mode,
-        "model": CODER_MODEL,
-        "task": task,
-        "result": result,
-        "meta": meta or {}
-    }
+def detect_task_type(task):
+    task_lower = (task or "").lower()
 
-    with open(CODE_MEMORY_FILE, "a", encoding="utf-8") as f:
-        f.write(json.dumps(item, ensure_ascii=False) + "\n")
+    if "curl" in task_lower:
+        return "curl_to_requests"
 
-def load_code_lessons(task, max_items=5):
-    path = "code_lessons.jsonl"
+    # TXT dicek sebelum JSON/JSONL agar tugas input.txt tidak kebawa JSONL.
+    if (
+        "input.txt" in task_lower
+        or "clean.txt" in task_lower
+        or ".txt" in task_lower
+        or "baris kosong" in task_lower
+        or "duplikat" in task_lower
+    ):
+        return "txt_file"
 
-    if not os.path.exists(path):
+    if "jsonl" in task_lower and ("folder" in task_lower or "semua file" in task_lower):
+        return "jsonl_folder_cli"
+
+    if "jsonl" in task_lower:
+        return "jsonl"
+
+    if "csv" in task_lower:
+        return "csv"
+
+    if "requests" in task_lower or "url" in task_lower:
+        return "http_requests"
+
+    if "config.json" in task_lower:
+        return "json_config"
+
+    if "argparse" in task_lower or "cli" in task_lower:
+        return "python_cli"
+
+    return "general_python"
+
+
+def load_code_lessons(task=None, max_items=5):
+    if not os.path.exists(CODE_LESSONS):
         return ""
 
-    wanted_type = detect_task_type(task)
+    wanted_type = detect_task_type(task or "")
     lessons = []
 
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(CODE_LESSONS, "r", encoding="utf-8") as f:
             lines = f.readlines()
 
         for line in reversed(lines):
@@ -67,23 +79,24 @@ def load_code_lessons(task, max_items=5):
 
             try:
                 item = json.loads(line)
-                old_task = item.get("task", "")
-                old_type = detect_task_type(old_task)
-
-                if old_type != wanted_type:
-                    continue
-
-                problems = item.get("problems", [])
-                must_fix = item.get("must_fix", [])
-
-                if problems:
-                    lessons.append("Kesalahan lama: " + "; ".join(problems[:3]))
-
-                if must_fix:
-                    lessons.append("Wajib diperbaiki: " + "; ".join(must_fix[:3]))
-
             except Exception:
                 continue
+
+            old_task = item.get("task", "")
+            old_type = detect_task_type(old_task)
+
+            # Jika task kosong, jangan ambil lesson lintas tipe.
+            if task and old_type != wanted_type:
+                continue
+
+            problems = item.get("problems", []) or []
+            must_fix = item.get("must_fix", []) or []
+
+            for problem in problems[:3]:
+                lessons.append("Kesalahan lama: " + str(problem))
+
+            for fix in must_fix[:3]:
+                lessons.append("Wajib diperbaiki: " + str(fix))
 
     except Exception:
         return ""
@@ -92,10 +105,108 @@ def load_code_lessons(task, max_items=5):
         return ""
 
     lessons = list(reversed(lessons))
-
-    return "\nPELAJARAN KHUSUS UNTUK TIPE TUGAS INI:\n" + "\n".join(
+    return "\nPELAJARAN RELEVAN DARI PENGALAMAN KUMAR:\n" + "\n".join(
         f"- {lesson}" for lesson in lessons
     )
+
+
+def ask_task_plan(user_task):
+    """
+    Planner stabil dan deterministic.
+    Ini tidak memakai LLM, supaya plan tidak rusak sebelum coding.
+    """
+    task_lower = (user_task or "").lower()
+    task_type = detect_task_type(user_task)
+
+    input_file = "tidak disebut"
+    output_file = "tidak disebut"
+
+    if "input.txt" in task_lower:
+        input_file = "input.txt"
+
+    if "clean.txt" in task_lower:
+        output_file = "clean.txt"
+
+    must_use = []
+    must_not_use = []
+    must_do = []
+
+    if "argparse" in task_lower or "cli" in task_lower:
+        must_use.append("argparse")
+
+    if task_type == "txt_file":
+        must_use.extend([
+            "open",
+            "encoding=utf-8",
+            "seen set untuk hapus duplikat",
+            "list untuk menjaga urutan hasil",
+        ])
+        must_not_use.extend([
+            "json",
+            "jsonl",
+            "json.loads",
+            "json.dumps",
+            "json.dump",
+            "input_folder",
+            "folder scan",
+            "iterdir",
+            "glob",
+        ])
+        must_do.extend([
+            "baca file teks biasa",
+            "hitung total baris awal",
+            "hapus baris kosong dengan line.strip() == ''",
+            "hapus duplikat tanpa merusak urutan",
+            "simpan hasil ke clean.txt",
+            "tampilkan total baris awal",
+            "tampilkan total baris kosong",
+            "tampilkan total duplikat",
+            "tampilkan total baris akhir",
+        ])
+
+    elif task_type in ["jsonl", "jsonl_folder_cli"]:
+        must_use.extend([
+            "json",
+            "json.loads(line.strip())",
+            "try/except json.JSONDecodeError",
+        ])
+        must_not_use.append("json.load(file) untuk JSONL")
+        must_do.extend([
+            "baca JSONL baris per baris",
+            "skip baris rusak",
+            "tulis output satu JSON per baris",
+        ])
+
+    elif task_type == "curl_to_requests":
+        must_use.extend([
+            "requests",
+            "headers",
+            "cookies jika ada",
+            "timeout",
+        ])
+        must_not_use.extend([
+            "mengarang token",
+            "menyimpan secret asli ke memory",
+        ])
+        must_do.extend([
+            "ubah curl menjadi Python requests",
+            "print status_code",
+            "print response",
+        ])
+
+    else:
+        must_use.append("kode Python standar")
+        must_do.append("ikuti permintaan user secara ketat")
+
+    return f"""TASK_TYPE: {task_type}
+INPUT: {input_file}
+OUTPUT: {output_file}
+MUST_USE: {", ".join(must_use)}
+MUST_NOT_USE: {", ".join(must_not_use)}
+MUST_DO: {", ".join(must_do)}
+NOTES: Buat kode hanya setelah plan ini dipahami. Jangan membawa pola dari tugas lain.
+"""
+
 
 def get_task_rules(task):
     task_type = detect_task_type(task)
@@ -117,7 +228,7 @@ ATURAN KHUSUS TUGAS TXT:
 - Output clean.txt harus berisi teks biasa, bukan JSON.
 """
 
-    if task_type == "jsonl":
+    if task_type in ["jsonl", "jsonl_folder_cli"]:
         return """
 ATURAN KHUSUS TUGAS JSONL:
 - JSONL harus dibaca baris per baris.
@@ -138,21 +249,16 @@ ATURAN KHUSUS TUGAS CURL:
 
     return ""
 
+
 def build_coder_prompt(user_task, feedback=None, previous_code=None):
-    lessons = load_code_lessons(user_task)
-    task_rules = get_task_rules(user_task)
     task_type = detect_task_type(user_task)
+    task_rules = get_task_rules(user_task)
+    lessons = load_code_lessons(user_task)
 
     extra = ""
 
     if feedback:
-        extra += """
-ATURAN REVISI PENTING:
-- Jangan mengubah tugas TXT menjadi JSONL.
-- Jika kode pertama sudah memakai teks biasa, pertahankan arah itu.
-- Perbaiki bug kecil saja, jangan ganti pendekatan menjadi JSON/JSONL.
-- Revisi tidak boleh menambahkan import json jika tugas tidak menyebut JSON.
-"""
+        extra += "\nKESALAHAN SEBELUMNYA YANG TIDAK BOLEH DIULANG:\n"
         for item in feedback:
             extra += f"- {item}\n"
 
@@ -161,9 +267,10 @@ PERINTAH REVISI:
 - Jangan menambal kode lama jika arahnya sudah salah.
 - Jika kode sebelumnya memakai pola yang dilarang, tulis ulang dari nol.
 - Ikuti tipe tugas user, bukan pola tugas sebelumnya.
+- Jangan mengubah tugas TXT menjadi JSONL.
+- Jangan menambahkan import json jika tugas tidak menyebut JSON.
 """
 
-    # Jangan masukkan kode lama terlalu panjang karena bisa membuat Kumar meniru kesalahan lama.
     if previous_code:
         extra += "\nCATATAN: Kode sebelumnya salah. Jangan ditiru jika bertentangan dengan aturan tugas.\n"
 
@@ -201,56 +308,88 @@ ATURAN UMUM:
 KODE PYTHON:
 """
 
-def clean_code_output(text):
-    text = text.strip()
 
-    if "```python" in text:
-        text = text.split("```python", 1)[1]
-        if "```" in text:
-            text = text.split("```", 1)[0]
+def dummy_code_answer(prompt):
+    return """# SOURCE: dummy
+print("Dummy backend aktif. Jalankan dengan CODER_BACKEND=openai_local agar Kumar memakai model lokal.")
+"""
 
-    elif "```" in text:
-        text = text.split("```", 1)[1]
-        if "```" in text:
-            text = text.split("```", 1)[0]
 
-    # Potong kalau model mulai menjelaskan setelah kode
-    stop_markers = [
-        "\nUntuk menjalankan",
-        "\n###",
-        "\nAturan:",
-        "\nContoh",
-        "\nKesimpulan",
-    ]
+def ask_openai_local(prompt):
+    payload = {
+        "model": CODER_MODEL,
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "Kamu adalah coder Python. "
+                    "Jawab hanya kode Python lengkap. "
+                    "Jangan pakai markdown."
+                ),
+            },
+            {
+                "role": "user",
+                "content": prompt,
+            },
+        ],
+        "temperature": 0.1,
+        "top_p": 0.9,
+        "max_tokens": 1800,
+        "stream": False,
+    }
 
-    for marker in stop_markers:
-        if marker in text:
-            text = text.split(marker, 1)[0]
+    r = requests.post(CODER_OPENAI_URL, json=payload, timeout=180)
+    r.raise_for_status()
+    data = r.json()
 
-    return text.strip()
+    try:
+        return data["choices"][0]["message"]["content"]
+    except Exception:
+        return json.dumps(data, ensure_ascii=False, indent=2)
+
+
+def ask_coder(user_task, feedback=None, previous_code=None):
+    prompt = build_coder_prompt(user_task, feedback=feedback, previous_code=previous_code)
+
+    if CODER_BACKEND == "openai_local":
+        try:
+            answer = ask_openai_local(prompt)
+            return extract_code(answer)
+        except Exception as e:
+            return f"""# SOURCE: openai_local_error
+# Backend lokal gagal menjawab.
+# Error: {e}
+"""
+
+    if CODER_BACKEND == "dummy":
+        return dummy_code_answer(prompt)
+
+    return f"""# SOURCE: backend_error
+# CODER_BACKEND tidak dikenal: {CODER_BACKEND}
+"""
+
 
 def validate_code(task, code):
     warnings = []
-    
+
     task_lower = (task or "").lower()
     code_text = code or ""
     code_lower = code_text.lower()
-
     task_type = detect_task_type(task)
 
     if task_type == "txt_file":
         forbidden = []
 
-        if "import json" in code_text:
+        if "import json" in code_lower:
             forbidden.append("Kode TXT tidak boleh import json.")
 
-        if "json.loads" in code_text or "json.dumps" in code_text or "json.dump" in code_text:
+        if "json.loads" in code_lower or "json.dumps" in code_lower or "json.dump" in code_lower:
             forbidden.append("Kode TXT tidak boleh memakai json.loads/json.dumps/json.dump.")
 
         if "jsonl" in code_lower:
             forbidden.append("Kode TXT tidak boleh membawa pola JSONL.")
 
-        if "input_folder" in code_text or ".glob(" in code_text or ".iterdir(" in code_text:
+        if "input_folder" in code_lower or ".glob(" in code_lower or ".iterdir(" in code_lower:
             forbidden.append("Tugas TXT ini harus membaca satu file input.txt, bukan folder.")
 
         if forbidden:
@@ -272,11 +411,9 @@ def validate_code(task, code):
                 "Output JSONL belum menulis newline. Gunakan output.write(json.dumps(data, ensure_ascii=False) + '\\n')."
             )
 
-    if "argparse" in task_lower:
+    if "argparse" in task_lower or "cli" in task_lower:
         if "argparse" not in code_text:
-            warnings.append(
-                "Kode belum memakai argparse, padahal user meminta CLI."
-            )
+            warnings.append("Kode belum memakai argparse, padahal user meminta CLI.")
 
     if "semua file" in task_lower or "folder" in task_lower:
         has_folder_scan = (
@@ -285,267 +422,30 @@ def validate_code(task, code):
             or "glob.glob" in code_text
             or ".iterdir(" in code_text
         )
-
         if not has_folder_scan:
-            warnings.append(
-                "Kode belum mencari semua file dalam folder."
-            )
+            warnings.append("Kode belum mencari semua file dalam folder.")
 
     if "output.jsonl" in task_lower or "gabungkan" in task_lower:
         has_output_write = (
             "open(" in code_text
             and ("'w'" in code_text or '"w"' in code_text or "'a'" in code_text or '"a"' in code_text)
         )
-
         if not has_output_write:
-            warnings.append(
-                "Kode belum terlihat menulis hasil gabungan ke file output."
-            )
+            warnings.append("Kode belum terlihat menulis hasil gabungan ke file output.")
 
     if "total file" in task_lower:
         if "total_files" not in code_text and "total_file" not in code_text:
-            warnings.append(
-                "Kode belum menghitung total file."
-            )
+            warnings.append("Kode belum menghitung total file.")
 
     if "valid" in task_lower:
-        if "valid" not in code_text.lower():
-            warnings.append(
-                "Kode belum menghitung total baris valid."
-            )
+        if "valid" not in code_lower:
+            warnings.append("Kode belum menghitung total baris valid.")
 
     if "rusak" in task_lower or "invalid" in task_lower:
-        if "rusak" not in code_text.lower() and "invalid" not in code_text.lower() and "bad" not in code_text.lower():
-            warnings.append(
-                "Kode belum menghitung total baris rusak/invalid."
-            )
+        if "rusak" not in code_lower and "invalid" not in code_lower and "bad" not in code_lower:
+            warnings.append("Kode belum menghitung total baris rusak/invalid.")
 
     if 'open(file_path, "w"' in code_text or "open(file_path, 'w'" in code_text:
-        warnings.append(
-            "Berbahaya: kode membuka file input dengan mode write."
-        )
+        warnings.append("Berbahaya: kode membuka file input dengan mode write.")
 
     return warnings
-
-def basic_code_warning(task, code):
-    warnings = []
-
-    task_lower = task.lower()
-
-    if "jsonl" in task_lower:
-        if "json.load(" in code:
-            warnings.append(
-                "PERINGATAN: Kode memakai json.load(), padahal JSONL harus dibaca baris per baris dengan json.loads(line)."
-            )
-
-        if "json.loads(line)" not in code and "json.loads(line.strip())" not in code:
-            warnings.append(
-                "PERINGATAN: Kode belum terlihat memakai json.loads(line) atau json.loads(line.strip()) untuk membaca JSONL."
-            )
-        if "output.jsonl" in task_lower or "jsonl" in task_lower:
-            if "json.dump(" in code and "\\n" not in code:
-                warnings.append(
-                    "PERINGATAN: Output JSONL harus menulis newline tiap data. Gunakan out.write(json.dumps(data, ensure_ascii=False) + '\\n')."
-                )
-
-    if warnings:
-        return "\n\n# " + "\n# ".join(warnings)
-
-    return ""
-
-def dummy_code_answer(prompt):
-    prompt_lower = prompt.lower()
-
-    if "jsonl" in prompt_lower:
-        return """import json
-
-def read_jsonl(path):
-    data = []
-
-    with open(path, "r", encoding="utf-8") as f:
-        for line_no, line in enumerate(f, start=1):
-            line = line.strip()
-
-            if not line:
-                continue
-
-            try:
-                data.append(json.loads(line))
-            except Exception as e:
-                print(f"Baris rusak {line_no}: {e}")
-
-    return data
-
-
-if __name__ == "__main__":
-    hasil = read_jsonl("data.jsonl")
-    print("Total data:", len(hasil))
-"""
-
-    if "requests" in prompt_lower or "api" in prompt_lower:
-        return """import requests
-
-def get_api(url):
-    try:
-        response = requests.get(url, timeout=15)
-        response.raise_for_status()
-        return response.json()
-    except requests.RequestException as e:
-        print("Request gagal:", e)
-        return None
-
-
-if __name__ == "__main__":
-    data = get_api("https://example.com/api")
-    print(data)
-"""
-
-    return """# Kumar Coder dummy mode
-# Backend model coder lokal belum aktif.
-
-def main():
-    print("Tugas diterima, tapi backend model coder belum aktif.")
-
-
-if __name__ == "__main__":
-    main()
-"""
-
-
-def ask_openai_local(prompt):
-    payload = {
-    "model": CODER_MODEL,
-    "messages": [
-        {
-            "role": "system",
-            "content": "Kamu adalah model coding lokal. Jawab dengan kode yang benar, ringkas, dan langsung bisa dijalankan. Jangan mengulang instruksi user."
-        },
-        {
-            "role": "user",
-            "content": build_coder_prompt(prompt)
-        }
-    ],
-    "temperature": 0.2,
-    "top_p": 0.85,
-    "max_tokens": 1200,
-    "repeat_penalty": 1.12,
-}
-
-    data = json.dumps(payload).encode("utf-8")
-
-    req = urllib.request.Request(
-        CODER_OPENAI_URL,
-        data=data,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": "Bearer local"
-        },
-        method="POST"
-    )
-
-    with urllib.request.urlopen(req, timeout=300) as resp:
-        raw = resp.read().decode("utf-8")
-        result = json.loads(raw)
-
-    return result["choices"][0]["message"]["content"].strip()
-
-
-def ask_ollama(prompt):
-    payload = {
-        "model": CODER_MODEL,
-        "prompt": build_coder_prompt(prompt),
-        "stream": False,
-        "options": {
-            "temperature": 0.2,
-            "top_p": 0.9
-        }
-    }
-
-    data = json.dumps(payload).encode("utf-8")
-
-    req = urllib.request.Request(
-        OLLAMA_URL,
-        data=data,
-        headers={
-            "Content-Type": "application/json"
-        },
-        method="POST"
-    )
-
-    with urllib.request.urlopen(req, timeout=180) as resp:
-        raw = resp.read().decode("utf-8")
-        result = json.loads(raw)
-
-    return result.get("response", "").strip()
-
-def detect_task_type(task):
-    task_lower = (task or "").lower()
-
-    if "curl" in task_lower:
-        return "curl_to_requests"
-
-    if "jsonl" in task_lower:
-        return "jsonl"
-
-    if ".txt" in task_lower or "input.txt" in task_lower or "clean.txt" in task_lower:
-        return "txt_file"
-
-    if "csv" in task_lower:
-        return "csv"
-
-    if "requests" in task_lower or "url" in task_lower:
-        return "http_requests"
-
-    if "config.json" in task_lower:
-        return "json_config"
-
-    return "general_python"
-
-def ask_coder(prompt):
-    try:
-        if CODER_BACKEND == "openai_local":
-            result = ask_openai_local(prompt)
-            result = clean_code_output(result)
-            result = result + basic_code_warning(prompt, result)
-            save_code_memory(prompt, result, mode="openai_local")
-            return result
-
-        if CODER_BACKEND == "ollama":
-            result = ask_ollama(prompt)
-            result = clean_code_output(result)
-            result = result + basic_code_warning(prompt, result)
-            save_code_memory(prompt, result, mode="ollama")
-            return result
-
-        result = dummy_code_answer(prompt)
-        save_code_memory(prompt, result, mode="dummy")
-        return result
-
-    except urllib.error.URLError as e:
-        result = f"""# SOURCE: openai_local_error
-    # Backend model lokal belum aktif atau tidak bisa dihubungi.
-    # Backend: {CODER_BACKEND}
-    # Error: {e}
-    # 
-    # Dummy fallback dimatikan agar Kumar tidak belajar dari jawaban palsu.
-    """
-        save_code_memory(
-            prompt,
-            result,
-            mode="openai_local_error",
-            meta={"error": str(e)}
-        )
-        return result
-
-    except Exception as e:
-        result = f"""# SOURCE: openai_local_error
-    # Backend lokal gagal menjawab.
-    # Error: {e}
-    """
-        save_code_memory(
-            prompt,
-            result,
-            mode="openai_local_error",
-            meta={"error": str(e)}
-        )
-        return result

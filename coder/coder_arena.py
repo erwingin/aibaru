@@ -8,7 +8,7 @@ import difflib
 import requests
 import subprocess
 import tempfile
-from coder_local import ask_coder, validate_code
+from coder_local import ask_coder, validate_code, ask_task_plan
 
 
 MIMO_URL = os.getenv("MIMO_URL", "https://api.xiaomimimo.com/v1/chat/completions")
@@ -67,51 +67,34 @@ def is_code_too_similar(old_code, new_code, limit=0.90):
     return code_similarity(old_code, new_code) >= limit
 
 
-def build_forced_rewrite_task(task, review):
+def build_forced_rewrite_task(task, task_plan, review):
     problems = review.get("problems", [])
     must_fix = review.get("must_fix", [])
 
     return f"""
-TUGAS ASLI:
+TUGAS USER:
 {task}
 
-PERINTAH PENTING:
-Kode sebelumnya gagal dan revisi sebelumnya terlalu mirip.
-JANGAN menulis fungsi read_jsonl sederhana saja.
-JANGAN hardcode data.jsonl.
-TULIS ULANG PROGRAM LENGKAP DARI NOL.
+TASK PLAN YANG SUDAH DISETUJUI:
+{task_plan}
+
+KODE SEBELUMNYA GAGAL DAN TERLALU MIRIP.
+TULIS ULANG DARI NOL.
 
 KESALAHAN YANG HARUS DIHINDARI:
 {json.dumps(problems, ensure_ascii=False, indent=2)}
 
-FITUR WAJIB ADA:
+WAJIB DIPERBAIKI:
 {json.dumps(must_fix, ensure_ascii=False, indent=2)}
 
-CHECKLIST WAJIB:
-- import argparse
-- menerima input folder, default: data
-- menerima output file, default: output.jsonl
-- mencari semua file .jsonl dalam folder
-- membaca setiap file baris per baris
-- memakai json.loads(line.strip())
-- skip baris rusak dengan except json.JSONDecodeError
-- menulis semua data valid ke output.jsonl
-- output JSONL harus satu JSON per baris
-- menghitung total file
-- menghitung total baris valid
-- menghitung total baris rusak
-- print semua statistik di akhir
-- jangan membuka file input dengan mode "w"
-
-STRUKTUR PROGRAM:
-1. parse_args()
-2. process_file(file_path, output_handle)
-3. main()
-4. if __name__ == "__main__": main()
-
-JAWAB HANYA KODE PYTHON LENGKAP.
-Jangan pakai markdown.
-Jangan beri penjelasan.
+ATURAN:
+- Ikuti TASK PLAN.
+- Jangan melanggar MUST_NOT_USE.
+- Jangan membawa pola dari tugas lain.
+- Jangan menambahkan fitur yang tidak diminta user.
+- Tulis kode Python lengkap yang bisa langsung dijalankan.
+- Jawab hanya kode Python.
+- Jangan pakai markdown.
 """
 
 def save_code_lesson(task, review):
@@ -128,11 +111,32 @@ def save_code_lesson(task, review):
 def detect_task_type(task):
     task_lower = (task or "").lower()
 
+    if "curl" in task_lower:
+        return "curl_to_requests"
+
+    # TXT dicek sebelum JSONL/CLI.
+    if (
+        "input.txt" in task_lower
+        or "clean.txt" in task_lower
+        or ".txt" in task_lower
+        or "baris kosong" in task_lower
+        or "duplikat" in task_lower
+        or "hapus baris kosong" in task_lower
+        or "hapus duplikat" in task_lower
+    ):
+        return "txt_file"
+
     if "jsonl" in task_lower and ("folder" in task_lower or "semua file" in task_lower):
         return "jsonl_folder_cli"
 
     if "jsonl" in task_lower:
         return "jsonl"
+
+    if "csv" in task_lower:
+        return "csv"
+
+    if "requests" in task_lower or "url" in task_lower:
+        return "http_requests"
 
     if "argparse" in task_lower or "cli" in task_lower:
         return "python_cli"
@@ -374,6 +378,44 @@ def run_runtime_test(task, code):
             "passed": False,
             "notes": last_error
         }
+def validate_task_plan(task, plan_text):
+    task_lower = (task or "").lower()
+    plan_lower = (plan_text or "").lower()
+
+    problems = []
+
+    is_txt_task = (
+        "input.txt" in task_lower
+        or "clean.txt" in task_lower
+        or ".txt" in task_lower
+        or "baris kosong" in task_lower
+        or "duplikat" in task_lower
+    )
+
+    if is_txt_task:
+        if "task_type:" not in plan_lower:
+            problems.append("Plan belum punya TASK_TYPE.")
+
+        if "txt_file" not in plan_lower:
+            problems.append("Plan salah: tugas ini harus dikenali sebagai txt_file.")
+
+        if "input.txt" in task_lower and "input.txt" not in plan_lower:
+            problems.append("Plan salah: input.txt tidak disebut sebagai input.")
+
+        if "clean.txt" in task_lower and "clean.txt" not in plan_lower:
+            problems.append("Plan salah: clean.txt tidak disebut sebagai output.")
+
+        if "argparse" in task_lower and "argparse" not in plan_lower:
+            problems.append("Plan salah: argparse tidak masuk MUST_USE.")
+
+        if "jsonl" in plan_lower and "must_not_use" not in plan_lower:
+            problems.append("Plan berbahaya: JSONL muncul bukan sebagai larangan.")
+
+        if "json" in plan_lower and "must_not_use" not in plan_lower:
+            problems.append("Plan berbahaya: JSON muncul bukan sebagai larangan.")
+
+    return problems
+    
 def block_repeated_mistake(task, code):
     task_lower = (task or "").lower()
     code_text = code or ""
@@ -402,7 +444,8 @@ def block_repeated_mistake(task, code):
             (".iterdir(", "Tugas TXT tidak boleh scan folder."),
             (".glob(", "Tugas TXT tidak boleh scan folder."),
             ("folder containing", "Tugas TXT tidak boleh menganggap input sebagai folder."),
-            ("data.jsonl", "Tugas TXT tidak boleh hardcode data.jsonl."),
+            ("output.jsonl", "Tugas TXT tidak boleh memakai output.jsonl."),
+            ("clean.jsonl", "Tugas TXT tidak boleh memakai clean.jsonl."),
         ]
 
         for pattern, message in forbidden_patterns:
@@ -410,7 +453,8 @@ def block_repeated_mistake(task, code):
                 blocked.append("Kumar mengulang kesalahan: " + message)
 
     return blocked
-    
+
+
 def apply_local_validator(task, code, review):
     review = dict(review)
 
@@ -698,17 +742,20 @@ KODE KUMAR:
         }
 
 
-def build_revision_task(task, old_code, review):
+def build_revision_task(task, task_plan, old_code, review):
     problems = review.get("problems", [])
     must_fix = review.get("must_fix", [])
 
     return f"""
-TUGAS ASLI:
+TUGAS USER:
 {task}
 
-KODE SEBELUMNYA DINILAI GAGAL.
-JANGAN MENIRU STRUKTUR KODE LAMA.
-TULIS ULANG DARI NOL.
+TASK PLAN YANG SUDAH DISETUJUI:
+{task_plan}
+
+KODE SEBELUMNYA SALAH.
+JANGAN MENIRU KESALAHAN KODE LAMA.
+JANGAN MENGUBAH TIPE TUGAS.
 
 KESALAHAN KODE LAMA:
 {json.dumps(problems, ensure_ascii=False, indent=2)}
@@ -716,31 +763,16 @@ KESALAHAN KODE LAMA:
 WAJIB DIPERBAIKI:
 {json.dumps(must_fix, ensure_ascii=False, indent=2)}
 
-SYARAT WAJIB KODE BARU:
-- Wajib memakai argparse.
-- Wajib membaca semua file .jsonl dalam folder input.
-- Wajib skip baris rusak dengan try/except json.JSONDecodeError.
-- Wajib menggabungkan semua data valid ke output.jsonl.
-- Wajib menulis output dengan format JSONL, satu JSON per baris.
-- Wajib menampilkan total file.
-- Wajib menampilkan total baris valid.
-- Wajib menampilkan total baris rusak.
-- Jangan hardcode hanya data.jsonl.
-- Jangan hanya membuat fungsi read_jsonl satu file.
-- Jangan membuka file input dengan mode "w".
-- Gunakan pathlib atau os.listdir.
-
-CONTOH STRUKTUR YANG DIHARAPKAN:
-1. parse_args()
-2. process_file(file_path, output_handle)
-3. main()
-4. if __name__ == "__main__": main()
-
-JAWAB HANYA KODE PYTHON LENGKAP.
-Jangan pakai markdown.
-Jangan beri penjelasan.
+ATURAN REVISI:
+- Ikuti TASK PLAN.
+- Jangan melanggar MUST_NOT_USE.
+- Jika kode lama arahnya salah, tulis ulang dari nol.
+- Jangan membawa pola dari tugas lain.
+- Jangan menambahkan fitur yang tidak diminta user.
+- Tulis kode Python lengkap yang bisa langsung dijalankan.
+- Jawab hanya kode Python.
+- Jangan pakai markdown.
 """
-
 
 def pick_best(first_code, first_review, revised_code, final_review):
     first_score = int(first_review.get("score", 0) or 0)
@@ -760,8 +792,47 @@ def save_last_code(code):
 def run_arena(task):
     attempts = []
 
-    print("\n[1] Kumar Coder membuat kode pertama...")
-    current_code = ask_coder(task)
+    print("\n[0] Kumar membuat rencana tugas dulu...")
+    task_plan = ask_task_plan(task)
+
+    print("\n--- TASK PLAN KUMAR ---")
+    print(task_plan)
+
+    plan_problems = validate_task_plan(task, task_plan)
+
+    if plan_problems:
+        print("\n[PLAN DITOLAK] Rencana Kumar masih salah:")
+        for item in plan_problems:
+            print("-", item)
+
+        save_code_lesson(
+            task,
+            {
+                "score": 0,
+                "verdict": "plan_salah",
+                "problems": plan_problems,
+                "must_fix": [
+                    "Pahami tipe tugas sebelum menulis kode.",
+                    "Buat plan yang sesuai dengan input, output, larangan, dan kewajiban user."
+                ],
+                "notes": "Kode tidak dibuat karena task_plan salah."
+            }
+        )
+        return
+
+    coder_task = f"""
+    TUGAS USER:
+    {task}
+
+    TASK PLAN YANG SUDAH DISETUJUI:
+    {task_plan}
+
+    Tulis kode Python berdasarkan TASK PLAN ini.
+    Jangan melanggar MUST_NOT_USE.
+    """
+
+    print("\n[1] Kumar Coder membuat kode pertama berdasarkan task plan...")
+    current_code = ask_coder(coder_task)
 
     print("\n[2] Mengecek apakah Kumar mengulang kesalahan lama...")
 
@@ -827,7 +898,7 @@ def run_arena(task):
 
         print(f"\n[REVISI {round_no}] Skor belum cukup. Kumar memperbaiki kode berdasarkan kritik...")
 
-        revision_task = build_revision_task(task, current_code, current_review)
+        revision_task = build_revision_task(task, task_plan, current_code, current_review)
         revised_code = ask_coder(revision_task)
 
         similarity = code_similarity(current_code, revised_code)
@@ -835,7 +906,7 @@ def run_arena(task):
 
         if is_code_too_similar(current_code, revised_code):
             print("\n[ANTI-STUCK] Revisi terlalu mirip. Kumar dipaksa tulis ulang dari nol...")
-            forced_task = build_forced_rewrite_task(task, current_review)
+            forced_task = build_forced_rewrite_task(task, task_plan, current_review)
             revised_code = ask_coder(forced_task)
 
         print(f"\n--- KODE REVISI {round_no} KUMAR ---")
@@ -950,6 +1021,262 @@ def main():
         start = time.time()
         run_arena(task)
         print(f"\nSelesai dalam {time.time() - start:.2f} detik.\n")
+
+    # ============================================================
+# SAFE OVERRIDE: TASK TYPE, PLAN, RULES, CODER PROMPT
+# Tempel di PALING BAWAH coder/coder_local.py
+# ============================================================
+
+def detect_task_type(task):
+    task_lower = (task or "").lower()
+
+    if "curl" in task_lower:
+        return "curl_to_requests"
+
+    # TXT dicek sebelum JSON/JSONL
+    if (
+        "input.txt" in task_lower
+        or "clean.txt" in task_lower
+        or ".txt" in task_lower
+        or "baris kosong" in task_lower
+        or "duplikat" in task_lower
+    ):
+        return "txt_file"
+
+    if "jsonl" in task_lower:
+        return "jsonl"
+
+    if "csv" in task_lower:
+        return "csv"
+
+    if "requests" in task_lower or "url" in task_lower:
+        return "http_requests"
+
+    if "config.json" in task_lower:
+        return "json_config"
+
+    if "argparse" in task_lower or "cli" in task_lower:
+        return "python_cli"
+
+    return "general_python"
+
+
+def ask_task_plan(user_task):
+    """
+    Planner stabil.
+    Ini tidak menulis kode.
+    Ini hanya membuat kontrak tugas agar Kumar tidak salah arah.
+    """
+
+    task_lower = (user_task or "").lower()
+    task_type = detect_task_type(user_task)
+
+    input_file = "tidak disebut"
+    output_file = "tidak disebut"
+
+    if "input.txt" in task_lower:
+        input_file = "input.txt"
+
+    if "clean.txt" in task_lower:
+        output_file = "clean.txt"
+
+    must_use = []
+    must_not_use = []
+    must_do = []
+
+    if "argparse" in task_lower or "cli" in task_lower:
+        must_use.append("argparse")
+
+    if task_type == "txt_file":
+        must_use.extend([
+            "open",
+            "encoding=utf-8",
+            "seen set untuk hapus duplikat",
+            "list untuk menjaga urutan hasil"
+        ])
+
+        must_not_use.extend([
+            "json",
+            "jsonl",
+            "json.loads",
+            "json.dumps",
+            "json.dump",
+            "input_folder",
+            "folder scan",
+            "iterdir",
+            "glob"
+        ])
+
+        must_do.extend([
+            "baca file teks biasa",
+            "hitung total baris awal",
+            "hapus baris kosong dengan line.strip() == ''",
+            "hapus duplikat tanpa merusak urutan",
+            "simpan hasil ke clean.txt",
+            "tampilkan total baris awal",
+            "tampilkan total baris kosong",
+            "tampilkan total duplikat",
+            "tampilkan total baris akhir"
+        ])
+
+    elif task_type == "jsonl":
+        must_use.extend([
+            "json",
+            "json.loads(line.strip())",
+            "try/except json.JSONDecodeError"
+        ])
+
+        must_not_use.extend([
+            "json.load(file) untuk JSONL"
+        ])
+
+        must_do.extend([
+            "baca JSONL baris per baris",
+            "skip baris rusak",
+            "tulis output satu JSON per baris"
+        ])
+
+    elif task_type == "curl_to_requests":
+        must_use.extend([
+            "requests",
+            "headers",
+            "cookies jika ada",
+            "timeout"
+        ])
+
+        must_not_use.extend([
+            "mengarang token",
+            "menyimpan secret asli ke memory"
+        ])
+
+        must_do.extend([
+            "ubah curl menjadi Python requests",
+            "print status_code",
+            "print response"
+        ])
+
+    else:
+        must_use.append("kode Python standar")
+        must_do.append("ikuti permintaan user secara ketat")
+
+    return f"""TASK_TYPE: {task_type}
+INPUT: {input_file}
+OUTPUT: {output_file}
+MUST_USE: {", ".join(must_use)}
+MUST_NOT_USE: {", ".join(must_not_use)}
+MUST_DO: {", ".join(must_do)}
+NOTES: Buat kode hanya setelah plan ini dipahami. Jangan membawa pola dari tugas lain.
+"""
+
+
+def get_task_rules(task):
+    task_type = detect_task_type(task)
+
+    if task_type == "txt_file":
+        return """
+ATURAN KHUSUS TUGAS TXT:
+- Ini tugas file teks biasa, bukan JSON dan bukan JSONL.
+- DILARANG import json.
+- DILARANG memakai json.loads.
+- DILARANG memakai json.dumps.
+- DILARANG memakai json.dump.
+- DILARANG memakai input_folder.
+- DILARANG scan folder dengan iterdir/glob.
+- Baca satu file input.txt atau argumen input file.
+- Simpan hasil ke clean.txt.
+- Baris kosong dicek dengan line.strip() == "".
+- Hapus duplikat memakai seen = set() dan list hasil agar urutan tetap.
+- Output clean.txt harus berisi teks biasa, bukan JSON.
+"""
+
+    if task_type == "jsonl":
+        return """
+ATURAN KHUSUS TUGAS JSONL:
+- JSONL harus dibaca baris per baris.
+- Gunakan json.loads(line) atau json.loads(line.strip()).
+- Jangan pakai json.load(file) untuk JSONL.
+- Output JSONL harus satu JSON per baris.
+"""
+
+    if task_type == "curl_to_requests":
+        return """
+ATURAN KHUSUS TUGAS CURL:
+- Ubah curl menjadi script Python requests.
+- Ambil URL, method, headers, cookie, dan body dari curl.
+- Jangan mengarang token/header yang tidak ada.
+- Gunakan timeout.
+- Cetak status_code dan response text/json.
+"""
+
+    return ""
+
+
+def build_coder_prompt(user_task, feedback=None, previous_code=None):
+    task_type = detect_task_type(user_task)
+    task_rules = get_task_rules(user_task)
+
+    try:
+        lessons = load_code_lessons(user_task)
+    except TypeError:
+        try:
+            lessons = load_code_lessons()
+        except Exception:
+            lessons = ""
+    except Exception:
+        lessons = ""
+
+    extra = ""
+
+    if feedback:
+        extra += "\nKESALAHAN SEBELUMNYA YANG TIDAK BOLEH DIULANG:\n"
+        for item in feedback:
+            extra += f"- {item}\n"
+
+        extra += """
+PERINTAH REVISI:
+- Jangan menambal kode lama jika arahnya sudah salah.
+- Jika kode sebelumnya memakai pola yang dilarang, tulis ulang dari nol.
+- Ikuti tipe tugas user, bukan pola tugas sebelumnya.
+- Jangan mengubah tugas TXT menjadi JSONL.
+- Jangan menambahkan import json jika tugas tidak menyebut JSON.
+"""
+
+    if previous_code:
+        extra += "\nCATATAN: Kode sebelumnya salah. Jangan ditiru jika bertentangan dengan aturan tugas.\n"
+
+    return f"""Kamu adalah Kumar Coder.
+Tugasmu menulis kode Python yang sesuai persis dengan permintaan user.
+
+TIPE TUGAS TERDETEKSI:
+{task_type}
+
+{task_rules}
+
+{lessons}
+
+TUGAS USER:
+{user_task}
+
+{extra}
+
+FORMAT JAWABAN:
+Tulis KODE PYTHON SAJA.
+Jangan pakai markdown.
+Jangan pakai ```python.
+Jangan menulis penjelasan panjang.
+Jangan menulis "Aturan", "Contoh Penggunaan", atau "Kesimpulan".
+
+ATURAN UMUM:
+- Kode harus bisa langsung dijalankan.
+- Jika tugas meminta CLI, gunakan argparse.
+- Pakai encoding="utf-8" saat membaca atau menulis file teks.
+- Jangan memakai pola JSON/JSONL kecuali user jelas menyebut JSON atau JSONL.
+- Jangan scan folder kecuali user jelas meminta folder atau semua file dalam folder.
+- Jangan mengarang nama file lain jika user sudah menyebut nama file tertentu.
+- Print statistik sesuai permintaan user.
+
+KODE PYTHON:
+"""
 
 
 if __name__ == "__main__":
