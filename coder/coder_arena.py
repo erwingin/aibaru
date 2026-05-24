@@ -201,6 +201,78 @@ def save_code_mistake(task, code, review):
 
 def run_runtime_test(task, code):
     task_lower = (task or "").lower()
+    if "input.txt" in task_lower or "clean.txt" in task_lower or ".txt" in task_lower:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+
+            input_file = tmp_path / "input.txt"
+            input_file.write_text(
+                "apel\n"
+                "\n"
+                "jeruk\n"
+                "apel\n"
+                "mangga\n"
+                "\n"
+                "jeruk\n",
+                encoding="utf-8"
+            )
+
+            script_path = tmp_path / "candidate.py"
+            script_path.write_text(code, encoding="utf-8")
+
+            commands = [
+                ["python", str(script_path), "input.txt"],
+                ["python", str(script_path), "input.txt", "clean.txt"],
+                ["python", str(script_path), "input.txt", "--output", "clean.txt"],
+            ]
+
+            last_error = ""
+
+            for cmd in commands:
+                output_path = tmp_path / "clean.txt"
+
+                if output_path.exists():
+                    output_path.unlink()
+
+                try:
+                    result = subprocess.run(
+                        cmd,
+                        cwd=tmp_path,
+                        capture_output=True,
+                        text=True,
+                        timeout=15
+                    )
+                except Exception as e:
+                    last_error = str(e)
+                    continue
+
+                if result.returncode != 0:
+                    last_error = result.stderr.strip() or result.stdout.strip()
+                    continue
+
+                if not output_path.exists():
+                    last_error = "clean.txt tidak dibuat."
+                    continue
+
+                lines = output_path.read_text(encoding="utf-8").splitlines()
+
+                if lines == ["apel", "jeruk", "mangga"]:
+                    stdout = result.stdout.lower()
+                    if "7" in stdout and "2" in stdout and "3" in stdout:
+                        return {
+                            "enabled": True,
+                            "passed": True,
+                            "notes": "Runtime test TXT lulus: clean.txt benar dan statistik tampil.",
+                            "stdout": result.stdout.strip()
+                        }
+
+                last_error = f"clean.txt salah. Isi: {lines}, stdout={result.stdout.strip()}"
+
+            return {
+                "enabled": True,
+                "passed": False,
+                "notes": last_error
+            }
 
     # Untuk sekarang runtime test khusus tugas JSONL folder.
     if "jsonl" not in task_lower:
@@ -302,7 +374,43 @@ def run_runtime_test(task, code):
             "passed": False,
             "notes": last_error
         }
+def block_repeated_mistake(task, code):
+    task_lower = (task or "").lower()
+    code_text = code or ""
+    code_lower = code_text.lower()
 
+    blocked = []
+
+    is_txt_task = (
+        "input.txt" in task_lower
+        or "clean.txt" in task_lower
+        or ".txt" in task_lower
+        or "baris kosong" in task_lower
+        or "duplikat" in task_lower
+        or "hapus baris kosong" in task_lower
+        or "hapus duplikat" in task_lower
+    )
+
+    if is_txt_task:
+        forbidden_patterns = [
+            ("import json", "Tugas TXT tidak boleh import json."),
+            ("json.loads", "Tugas TXT tidak boleh memakai json.loads."),
+            ("json.dumps", "Tugas TXT tidak boleh memakai json.dumps."),
+            ("json.dump", "Tugas TXT tidak boleh memakai json.dump."),
+            ("jsonl", "Tugas TXT tidak boleh membawa pola JSONL."),
+            ("input_folder", "Tugas TXT harus membaca satu file input.txt, bukan input_folder."),
+            (".iterdir(", "Tugas TXT tidak boleh scan folder."),
+            (".glob(", "Tugas TXT tidak boleh scan folder."),
+            ("folder containing", "Tugas TXT tidak boleh menganggap input sebagai folder."),
+            ("data.jsonl", "Tugas TXT tidak boleh hardcode data.jsonl."),
+        ]
+
+        for pattern, message in forbidden_patterns:
+            if pattern in code_lower:
+                blocked.append("Kumar mengulang kesalahan: " + message)
+
+    return blocked
+    
 def apply_local_validator(task, code, review):
     review = dict(review)
 
@@ -655,9 +763,30 @@ def run_arena(task):
     print("\n[1] Kumar Coder membuat kode pertama...")
     current_code = ask_coder(task)
 
-    print("\n[2] MiMo Guru mengkritik kode pertama...")
-    current_review = ask_mimo_review(task, current_code)
-    current_review = apply_local_validator(task, current_code, current_review)
+    print("\n[2] Mengecek apakah Kumar mengulang kesalahan lama...")
+
+    blocked = block_repeated_mistake(task, current_code)
+
+    if blocked:
+        print("\n[BLOCKED] Kumar mengulang kesalahan lama:")
+        for item in blocked:
+            print("-", item)
+
+        current_review = {
+            "score": 0,
+            "verdict": "perlu_revisi",
+            "problems": blocked,
+            "must_fix": [
+                "Tulis ulang dari nol sesuai tipe tugas.",
+                "Jangan membawa pola dari tugas lain.",
+                "Gunakan aturan khusus task_type sebelum membuat kode."
+            ],
+            "notes": "Diblokir oleh mistake gate sebelum review MiMo."
+        }
+    else:
+        print("\n[2] MiMo Guru mengkritik kode pertama...")
+        current_review = ask_mimo_review(task, current_code)
+        current_review = apply_local_validator(task, current_code, current_review)
 
     print("\n--- REVIEW PERTAMA ---")
     print(json.dumps(current_review, ensure_ascii=False, indent=2))
@@ -712,9 +841,30 @@ def run_arena(task):
         print(f"\n--- KODE REVISI {round_no} KUMAR ---")
         print(revised_code)
 
-        print(f"\n[REVIEW {round_no}] MiMo Guru mengecek kode revisi...")
-        revised_review = ask_mimo_review(task, revised_code)
-        revised_review = apply_local_validator(task, revised_code, revised_review)
+        print(f"\n[REVIEW {round_no}] Mengecek apakah revisi mengulang kesalahan lama...")
+
+        blocked = block_repeated_mistake(task, revised_code)
+
+        if blocked:
+            print("\n[BLOCKED] Revisi Kumar mengulang kesalahan lama:")
+            for item in blocked:
+                print("-", item)
+
+            revised_review = {
+                "score": 0,
+                "verdict": "perlu_revisi",
+                "problems": blocked,
+                "must_fix": [
+                    "Tulis ulang dari nol. Kesalahan ini sudah pernah terjadi.",
+                    "Jangan memakai pola JSONL untuk tugas TXT.",
+                    "Ikuti tipe tugas user dengan ketat."
+                ],
+                "notes": "Revisi diblokir karena mengulang kesalahan lama."
+            }
+        else:
+            print(f"\n[REVIEW {round_no}] MiMo Guru mengecek kode revisi...")
+            revised_review = ask_mimo_review(task, revised_code)
+            revised_review = apply_local_validator(task, revised_code, revised_review)
 
         print(f"\n--- REVIEW REVISI {round_no} ---")
         print(json.dumps(revised_review, ensure_ascii=False, indent=2))

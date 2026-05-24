@@ -48,21 +48,30 @@ def save_code_memory(task, result, mode="unknown", meta=None):
     with open(CODE_MEMORY_FILE, "a", encoding="utf-8") as f:
         f.write(json.dumps(item, ensure_ascii=False) + "\n")
 
-def load_code_lessons(max_items=5):
+def load_code_lessons(task, max_items=5):
     path = "code_lessons.jsonl"
 
     if not os.path.exists(path):
         return ""
 
+    wanted_type = detect_task_type(task)
     lessons = []
 
     try:
         with open(path, "r", encoding="utf-8") as f:
-            lines = f.readlines()[-max_items:]
+            lines = f.readlines()
 
-        for line in lines:
+        for line in reversed(lines):
+            if len(lessons) >= max_items:
+                break
+
             try:
                 item = json.loads(line)
+                old_task = item.get("task", "")
+                old_type = detect_task_type(old_task)
+
+                if old_type != wanted_type:
+                    continue
 
                 problems = item.get("problems", [])
                 must_fix = item.get("must_fix", [])
@@ -82,29 +91,94 @@ def load_code_lessons(max_items=5):
     if not lessons:
         return ""
 
-    return "\nPELAJARAN DARI KESALAHAN SEBELUMNYA:\n" + "\n".join(
-        f"- {lesson}" for lesson in lessons[-8:]
+    lessons = list(reversed(lessons))
+
+    return "\nPELAJARAN KHUSUS UNTUK TIPE TUGAS INI:\n" + "\n".join(
+        f"- {lesson}" for lesson in lessons
     )
 
+def get_task_rules(task):
+    task_type = detect_task_type(task)
+
+    if task_type == "txt_file":
+        return """
+ATURAN KHUSUS TUGAS TXT:
+- Ini tugas file teks biasa, bukan JSON dan bukan JSONL.
+- DILARANG import json.
+- DILARANG memakai json.loads.
+- DILARANG memakai json.dumps.
+- DILARANG memakai json.dump.
+- DILARANG memakai input_folder.
+- DILARANG scan folder dengan iterdir/glob.
+- Baca satu file input.txt atau argumen input file.
+- Simpan hasil ke clean.txt.
+- Baris kosong dicek dengan line.strip() == "".
+- Hapus duplikat memakai seen = set() dan list hasil agar urutan tetap.
+- Output clean.txt harus berisi teks biasa, bukan JSON.
+"""
+
+    if task_type == "jsonl":
+        return """
+ATURAN KHUSUS TUGAS JSONL:
+- JSONL harus dibaca baris per baris.
+- Gunakan json.loads(line) atau json.loads(line.strip()).
+- Jangan pakai json.load(file) untuk JSONL.
+- Output JSONL harus satu JSON per baris.
+"""
+
+    if task_type == "curl_to_requests":
+        return """
+ATURAN KHUSUS TUGAS CURL:
+- Ubah curl menjadi script Python requests.
+- Ambil URL, method, headers, cookie, dan body dari curl.
+- Jangan mengarang token/header yang tidak ada.
+- Gunakan timeout.
+- Cetak status_code dan response text/json.
+"""
+
+    return ""
+
 def build_coder_prompt(user_task, feedback=None, previous_code=None):
-    lessons = load_code_lessons()
+    lessons = load_code_lessons(user_task)
+    task_rules = get_task_rules(user_task)
+    task_type = detect_task_type(user_task)
+
     extra = ""
 
     if feedback:
-        extra += "\nKODE SEBELUMNYA SALAH.\n"
-        extra += "Perbaiki berdasarkan error validator berikut:\n"
+        extra += """
+ATURAN REVISI PENTING:
+- Jangan mengubah tugas TXT menjadi JSONL.
+- Jika kode pertama sudah memakai teks biasa, pertahankan arah itu.
+- Perbaiki bug kecil saja, jangan ganti pendekatan menjadi JSON/JSONL.
+- Revisi tidak boleh menambahkan import json jika tugas tidak menyebut JSON.
+"""
         for item in feedback:
             extra += f"- {item}\n"
 
-    if previous_code:
-        extra += "\nKode sebelumnya:\n"
-        extra += previous_code[:2000]
-        extra += "\n"
+        extra += """
+PERINTAH REVISI:
+- Jangan menambal kode lama jika arahnya sudah salah.
+- Jika kode sebelumnya memakai pola yang dilarang, tulis ulang dari nol.
+- Ikuti tipe tugas user, bukan pola tugas sebelumnya.
+"""
 
-    return f"""TUGAS:
-{user_task}
+    # Jangan masukkan kode lama terlalu panjang karena bisa membuat Kumar meniru kesalahan lama.
+    if previous_code:
+        extra += "\nCATATAN: Kode sebelumnya salah. Jangan ditiru jika bertentangan dengan aturan tugas.\n"
+
+    return f"""Kamu adalah Kumar Coder.
+Tugasmu menulis kode Python yang sesuai persis dengan permintaan user.
+
+TIPE TUGAS TERDETEKSI:
+{task_type}
+
+{task_rules}
 
 {lessons}
+
+TUGAS USER:
+{user_task}
 
 {extra}
 
@@ -115,16 +189,14 @@ Jangan pakai ```python.
 Jangan menulis penjelasan panjang.
 Jangan menulis "Aturan", "Contoh Penggunaan", atau "Kesimpulan".
 
-ATURAN WAJIB:
+ATURAN UMUM:
 - Kode harus bisa langsung dijalankan.
-- Pakai encoding="utf-8" saat membaca file.
-- Jika tugas menyebut JSONL, file harus dibaca baris per baris.
-- Untuk JSONL, gunakan json.loads(line) atau json.loads(line.strip()), bukan json.load(file).
 - Jika tugas meminta CLI, gunakan argparse.
-- Jika tugas meminta semua file dalam folder, gunakan os.listdir, glob, atau pathlib.
-- Jika tugas meminta output.jsonl, wajib tulis data valid ke file output.
-- Jika ada baris rusak, skip dengan try/except json.JSONDecodeError.
-- Print total data sesuai permintaan user.
+- Pakai encoding="utf-8" saat membaca atau menulis file teks.
+- Jangan memakai pola JSON/JSONL kecuali user jelas menyebut JSON atau JSONL.
+- Jangan scan folder kecuali user jelas meminta folder atau semua file dalam folder.
+- Jangan mengarang nama file lain jika user sudah menyebut nama file tertentu.
+- Print statistik sesuai permintaan user.
 
 KODE PYTHON:
 """
@@ -159,9 +231,30 @@ def clean_code_output(text):
 
 def validate_code(task, code):
     warnings = []
-
+    
     task_lower = (task or "").lower()
     code_text = code or ""
+    code_lower = code_text.lower()
+
+    task_type = detect_task_type(task)
+
+    if task_type == "txt_file":
+        forbidden = []
+
+        if "import json" in code_text:
+            forbidden.append("Kode TXT tidak boleh import json.")
+
+        if "json.loads" in code_text or "json.dumps" in code_text or "json.dump" in code_text:
+            forbidden.append("Kode TXT tidak boleh memakai json.loads/json.dumps/json.dump.")
+
+        if "jsonl" in code_lower:
+            forbidden.append("Kode TXT tidak boleh membawa pola JSONL.")
+
+        if "input_folder" in code_text or ".glob(" in code_text or ".iterdir(" in code_text:
+            forbidden.append("Tugas TXT ini harus membaca satu file input.txt, bukan folder.")
+
+        if forbidden:
+            warnings.extend(forbidden)
 
     if "jsonl" in task_lower:
         if "json.load(" in code_text:
@@ -385,6 +478,28 @@ def ask_ollama(prompt):
 
     return result.get("response", "").strip()
 
+def detect_task_type(task):
+    task_lower = (task or "").lower()
+
+    if "curl" in task_lower:
+        return "curl_to_requests"
+
+    if "jsonl" in task_lower:
+        return "jsonl"
+
+    if ".txt" in task_lower or "input.txt" in task_lower or "clean.txt" in task_lower:
+        return "txt_file"
+
+    if "csv" in task_lower:
+        return "csv"
+
+    if "requests" in task_lower or "url" in task_lower:
+        return "http_requests"
+
+    if "config.json" in task_lower:
+        return "json_config"
+
+    return "general_python"
 
 def ask_coder(prompt):
     try:
