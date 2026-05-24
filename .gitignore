@@ -43,3 +43,6 @@ coder_arena_log.jsonl
 code_lessons.jsonl
 last_kumar_code.py
 code_memory.jsonl
+
+.env.local
+.env
