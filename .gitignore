@@ -47,4 +47,8 @@ code_memory.jsonl
 .env.local
 .env
 
-code_mistakes.jsonl
+code_mistakes.jsonllast_mimo_full.json
+last_mimo_raw.txt
+code_memory.backup.jsonl
+data/
+output.jsonl
