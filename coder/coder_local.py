@@ -449,3 +449,256 @@ def validate_code(task, code):
         warnings.append("Berbahaya: kode membuka file input dengan mode write.")
 
     return warnings
+    # ============================================================
+# MEMORY-FIRST OVERRIDE
+# Kumar membaca pengalaman lama sebelum coding.
+# Ini bukan aturan TXT/JSON manual.
+# Ini mengambil pelajaran dari code_lessons.jsonl dan code_mistakes.jsonl.
+# ============================================================
+
+import os as _memory_os
+import json as _memory_json
+import re as _memory_re
+
+
+def _memory_tokens(text):
+    text = (text or "").lower()
+    return set(_memory_re.findall(r"[a-z0-9_./-]+", text))
+
+
+def _memory_to_text(item):
+    parts = []
+
+    for key in [
+        "task",
+        "mistake",
+        "bad_pattern",
+        "fix_rule",
+        "test_signal",
+        "notes",
+        "verdict",
+    ]:
+        value = item.get(key)
+        if value:
+            parts.append(str(value))
+
+    for key in ["problems", "must_fix"]:
+        value = item.get(key)
+        if isinstance(value, list):
+            parts.extend(str(x) for x in value)
+        elif value:
+            parts.append(str(value))
+
+    return "\n".join(parts)
+
+
+def _extract_plan_field(text, field_name):
+    field_name = field_name.lower().strip()
+
+    for line in (text or "").splitlines():
+        line_clean = line.strip()
+        if not line_clean:
+            continue
+
+        if line_clean.lower().startswith(field_name + ":"):
+            return line_clean.split(":", 1)[1].strip()
+
+    return ""
+
+
+def _extract_must_not_use(text):
+    raw = _extract_plan_field(text, "MUST_NOT_USE")
+    if not raw:
+        return []
+
+    items = []
+
+    for part in raw.split(","):
+        part = part.strip().lower()
+        if part:
+            items.append(part)
+
+    return items
+
+
+def load_relevant_experience(user_task, max_items=5):
+    """
+    Mengambil pengalaman yang relevan dari memory.
+    Tidak memakai aturan per tipe tugas.
+    Sistem ini memilih berdasarkan kemiripan task + plan.
+    """
+
+    current_text = user_task or ""
+    current_tokens = _memory_tokens(current_text)
+    forbidden_terms = _extract_must_not_use(current_text)
+
+    memory_files = [
+        ("code_lessons.jsonl", "lesson"),
+        ("code_mistakes.jsonl", "mistake"),
+    ]
+
+    candidates = []
+
+    for path, source in memory_files:
+        if not _memory_os.path.exists(path):
+            continue
+
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+        except Exception:
+            continue
+
+        for line in lines:
+            try:
+                item = _memory_json.loads(line)
+            except Exception:
+                continue
+
+            old_task = str(item.get("task", "") or "")
+            old_task_lower = old_task.lower()
+
+            # Kalau plan sekarang melarang sesuatu,
+            # jangan ambil pengalaman dari tugas lama yang memang meminta hal terlarang itu.
+            # Contoh: plan sekarang MUST_NOT_USE jsonl,
+            # maka lesson dari tugas lama yang memang meminta jsonl tidak dipakai.
+            conflict = False
+            for forbidden in forbidden_terms:
+                forbidden = forbidden.strip().lower()
+                if not forbidden:
+                    continue
+
+                if forbidden in old_task_lower:
+                    conflict = True
+                    break
+
+            if conflict:
+                continue
+
+            item_text = _memory_to_text(item)
+            item_tokens = _memory_tokens(item_text)
+
+            if not item_tokens:
+                continue
+
+            overlap = len(current_tokens & item_tokens)
+
+            # Tambah bobot kecil kalau task lama mirip task sekarang.
+            task_overlap = len(_memory_tokens(old_task) & current_tokens)
+
+            score = overlap + (task_overlap * 2)
+
+            if score <= 0:
+                continue
+
+            candidates.append({
+                "score": score,
+                "source": source,
+                "item": item,
+                "text": item_text,
+            })
+
+    candidates.sort(key=lambda x: x["score"], reverse=True)
+
+    selected = candidates[:max_items]
+
+    if not selected:
+        return "PENGALAMAN RELEVAN DARI MEMORY:\n- Belum ada pengalaman relevan. Kerjakan berdasarkan task plan dan hasil runtime test."
+
+    lines = ["PENGALAMAN RELEVAN DARI MEMORY:"]
+
+    for idx, cand in enumerate(selected, start=1):
+        item = cand["item"]
+
+        problems = item.get("problems", [])
+        must_fix = item.get("must_fix", [])
+
+        if not isinstance(problems, list):
+            problems = [str(problems)]
+
+        if not isinstance(must_fix, list):
+            must_fix = [str(must_fix)]
+
+        mistake = item.get("mistake", "")
+        fix_rule = item.get("fix_rule", "")
+        notes = item.get("notes", "")
+
+        lines.append(f"\nPengalaman {idx}:")
+
+        if mistake:
+            lines.append(f"- Kesalahan lama: {mistake}")
+
+        for problem in problems[:3]:
+            if problem:
+                lines.append(f"- Masalah lama: {problem}")
+
+        if fix_rule:
+            lines.append(f"- Cara menghindari: {fix_rule}")
+
+        for fix in must_fix[:3]:
+            if fix:
+                lines.append(f"- Wajib diperbaiki: {fix}")
+
+        if notes:
+            lines.append(f"- Catatan: {notes}")
+
+    return "\n".join(lines)
+
+
+def build_coder_prompt(user_task, feedback=None, previous_code=None):
+    """
+    Prompt baru:
+    - Tidak menambah aturan TXT/JSON manual.
+    - Mengandalkan task plan + pengalaman memory.
+    """
+
+    experiences = load_relevant_experience(user_task, max_items=5)
+
+    extra = ""
+
+    if feedback:
+        extra += "\nFEEDBACK TERBARU YANG HARUS DIPERBAIKI:\n"
+        for item in feedback:
+            extra += f"- {item}\n"
+
+    if previous_code:
+        extra += """
+KODE SEBELUMNYA ADA, TAPI JANGAN DITIRU BUTA-BUTA.
+Kalau kode lama bertentangan dengan task plan atau memory, tulis ulang dari nol.
+"""
+
+    return f"""Kamu adalah Kumar Coder.
+
+Tugasmu:
+- Baca task user.
+- Baca task plan jika ada.
+- Baca pengalaman relevan dari memory.
+- Tulis kode Python yang sesuai.
+- Jangan mengulang kesalahan lama yang sudah muncul di memory.
+
+TASK DAN PLAN:
+{user_task}
+
+{experiences}
+
+{extra}
+
+ATURAN UMUM:
+- Ikuti TASK PLAN jika ada.
+- Jangan melanggar MUST_NOT_USE jika ada.
+- Gunakan MUST_USE jika ada.
+- Kerjakan MUST_DO jika ada.
+- Kode harus bisa langsung dijalankan.
+- Jika tugas meminta CLI, gunakan argparse.
+- Pakai encoding="utf-8" saat membaca/menulis file.
+- Jangan menambahkan fitur yang tidak diminta.
+- Print output/statistik sesuai permintaan user.
+
+FORMAT JAWABAN:
+Tulis KODE PYTHON SAJA.
+Jangan pakai markdown.
+Jangan pakai ```python.
+Jangan menulis penjelasan.
+
+KODE PYTHON:
+"""
