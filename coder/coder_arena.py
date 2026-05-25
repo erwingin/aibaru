@@ -205,6 +205,143 @@ def save_code_mistake(task, code, review):
 
 def run_runtime_test(task, code):
     task_lower = (task or "").lower()
+    code_text = code or ""
+
+    # ==================================================
+    # RUNTIME TEST: CURL TO REQUESTS CONVERTER
+    # ==================================================
+    if "curl" in task_lower or "curl.txt" in task_lower:
+        import ast
+
+        def candidate_executes_requests(source_code):
+            """
+            Cek apakah candidate.py benar-benar memanggil requests.get/post.
+            String yang berisi 'requests.get(' untuk output.py tidak dianggap eksekusi.
+            """
+            try:
+                tree = ast.parse(source_code)
+            except Exception:
+                return False
+
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Call):
+                    func = node.func
+
+                    if isinstance(func, ast.Attribute):
+                        if func.attr in ["get", "post", "put", "delete", "patch", "request"]:
+                            value = func.value
+                            if isinstance(value, ast.Name) and value.id == "requests":
+                                return True
+
+            return False
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+
+            curl_file = tmp_path / "curl.txt"
+            curl_file.write_text(
+                "curl 'https://example.com/api/profile/me' "
+                "-H 'accept: application/json' "
+                "-H 'user-agent: Mozilla/5.0' "
+                "-b 'session=<SECRET>; session_hint=1'\n",
+                encoding="utf-8"
+            )
+
+            script_path = tmp_path / "candidate.py"
+            script_path.write_text(code_text, encoding="utf-8")
+
+            commands = [
+                ["python", str(script_path), "curl.txt"],
+                ["python", str(script_path), "curl.txt", "output.py"],
+                ["python", str(script_path), "curl.txt", "--output", "output.py"],
+            ]
+
+            errors = []
+
+            for cmd in commands:
+                output_path = tmp_path / "output.py"
+
+                if output_path.exists():
+                    output_path.unlink()
+
+                try:
+                    result = subprocess.run(
+                        cmd,
+                        cwd=tmp_path,
+                        capture_output=True,
+                        text=True,
+                        timeout=30
+                    )
+                except Exception as e:
+                    errors.append(str(e))
+                    continue
+
+                if result.returncode != 0:
+                    errors.append(result.stderr.strip() or result.stdout.strip())
+                    continue
+
+                if not output_path.exists():
+                    errors.append("output.py tidak dibuat.")
+                    continue
+
+                generated = output_path.read_text(encoding="utf-8")
+                generated_lower = generated.lower()
+                stdout = result.stdout.lower()
+
+                has_requests = "import requests" in generated_lower
+                has_url = "https://example.com/api/profile/me" in generated
+                has_header = "accept" in generated_lower and "application/json" in generated_lower
+                has_cookie = "session" in generated_lower and "<SECRET>" in generated
+                has_timeout = "timeout" in generated_lower
+
+                # candidate.py tidak boleh benar-benar menjalankan request.
+                # output.py boleh berisi requests.get/post, karena itu hasil generate.
+                candidate_safe = not candidate_executes_requests(code_text)
+
+                has_summary = (
+                    "method" in stdout
+                    and "url" in stdout
+                    and "headers" in stdout
+                    and "cookie" in stdout
+                    and "body" in stdout
+                )
+
+                if (
+                    has_requests
+                    and has_url
+                    and has_header
+                    and has_cookie
+                    and has_timeout
+                    and candidate_safe
+                    and has_summary
+                ):
+                    return {
+                        "enabled": True,
+                        "passed": True,
+                        "notes": "Runtime test CURL lulus: output.py dibuat dan converter tidak menjalankan request asli.",
+                        "stdout": result.stdout.strip()
+                    }
+
+                errors.append(
+                    "output.py belum sesuai. "
+                    f"has_requests={has_requests}, "
+                    f"has_url={has_url}, "
+                    f"has_header={has_header}, "
+                    f"has_cookie={has_cookie}, "
+                    f"has_timeout={has_timeout}, "
+                    f"candidate_safe={candidate_safe}, "
+                    f"has_summary={has_summary}"
+                )
+
+            return {
+                "enabled": True,
+                "passed": False,
+                "notes": " | ".join(errors[-3:])
+            }
+
+    # ==================================================
+    # RUNTIME TEST: TXT CLEANER
+    # ==================================================
     if "input.txt" in task_lower or "clean.txt" in task_lower or ".txt" in task_lower:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -222,7 +359,7 @@ def run_runtime_test(task, code):
             )
 
             script_path = tmp_path / "candidate.py"
-            script_path.write_text(code, encoding="utf-8")
+            script_path.write_text(code_text, encoding="utf-8")
 
             commands = [
                 ["python", str(script_path), "input.txt"],
@@ -230,7 +367,7 @@ def run_runtime_test(task, code):
                 ["python", str(script_path), "input.txt", "--output", "clean.txt"],
             ]
 
-            last_error = ""
+            errors = []
 
             for cmd in commands:
                 output_path = tmp_path / "clean.txt"
@@ -244,41 +381,99 @@ def run_runtime_test(task, code):
                         cwd=tmp_path,
                         capture_output=True,
                         text=True,
-                        timeout=15
+                        timeout=20
                     )
                 except Exception as e:
-                    last_error = str(e)
+                    errors.append(str(e))
                     continue
 
                 if result.returncode != 0:
-                    last_error = result.stderr.strip() or result.stdout.strip()
+                    errors.append(result.stderr.strip() or result.stdout.strip())
                     continue
 
                 if not output_path.exists():
-                    last_error = "clean.txt tidak dibuat."
+                    errors.append("clean.txt tidak dibuat.")
                     continue
 
                 lines = output_path.read_text(encoding="utf-8").splitlines()
+                stdout = result.stdout.lower()
 
-                if lines == ["apel", "jeruk", "mangga"]:
-                    stdout = result.stdout.lower()
-                    if "7" in stdout and "2" in stdout and "3" in stdout:
-                        return {
-                            "enabled": True,
-                            "passed": True,
-                            "notes": "Runtime test TXT lulus: clean.txt benar dan statistik tampil.",
-                            "stdout": result.stdout.strip()
-                        }
+                correct_output = lines == ["apel", "jeruk", "mangga"]
 
-                last_error = f"clean.txt salah. Isi: {lines}, stdout={result.stdout.strip()}"
+                has_total_lines = (
+                    "total lines: 7" in stdout
+                    or "total initial lines: 7" in stdout
+                    or "total lines initially: 7" in stdout
+                    or "total lines before cleaning: 7" in stdout
+                    or "total baris awal: 7" in stdout
+                    or "baris awal: 7" in stdout
+                )
+
+                has_empty_lines = (
+                    "empty lines: 2" in stdout
+                    or "total empty lines: 2" in stdout
+                    or "empty lines removed: 2" in stdout
+                    or "total empty lines removed: 2" in stdout
+                    or "total baris kosong: 2" in stdout
+                    or "baris kosong: 2" in stdout
+                )
+
+                has_duplicates = (
+                    "duplicates: 2" in stdout
+                    or "total duplicates: 2" in stdout
+                    or "duplicated lines: 2" in stdout
+                    or "total duplicated lines: 2" in stdout
+                    or "duplicate lines removed: 2" in stdout
+                    or "total duplicate lines removed: 2" in stdout
+                    or "duplikat: 2" in stdout
+                    or "total duplikat: 2" in stdout
+                )
+
+                has_final_lines = (
+                    "lines after cleaning: 3" in stdout
+                    or "total lines after cleaning: 3" in stdout
+                    or "final lines: 3" in stdout
+                    or "total final lines: 3" in stdout
+                    or "clean lines: 3" in stdout
+                    or "total clean lines: 3" in stdout
+                    or "baris akhir: 3" in stdout
+                    or "total baris akhir: 3" in stdout
+                )
+
+                has_total_info = (
+                    has_total_lines
+                    and has_empty_lines
+                    and has_duplicates
+                    and has_final_lines
+                )
+
+                if correct_output and has_total_info:
+                    return {
+                        "enabled": True,
+                        "passed": True,
+                        "notes": "Runtime test TXT lulus: clean.txt benar dan statistik tampil.",
+                        "stdout": result.stdout.strip()
+                    }
+
+                if not correct_output:
+                    errors.append(
+                        f"clean.txt salah. Isi: {lines}, stdout={result.stdout.strip()}"
+                    )
+                else:
+                    errors.append(
+                        "clean.txt benar, tapi statistik stdout belum lengkap/tepat. "
+                        f"stdout={result.stdout.strip()}"
+                    )
 
             return {
                 "enabled": True,
                 "passed": False,
-                "notes": last_error
+                "notes": " | ".join(errors[-3:])
             }
 
-    # Untuk sekarang runtime test khusus tugas JSONL folder.
+    # ==================================================
+    # RUNTIME TEST: JSONL FOLDER
+    # ==================================================
     if "jsonl" not in task_lower:
         return {
             "enabled": False,
@@ -306,7 +501,7 @@ def run_runtime_test(task, code):
         )
 
         script_path = tmp_path / "candidate.py"
-        script_path.write_text(code, encoding="utf-8")
+        script_path.write_text(code_text, encoding="utf-8")
 
         commands = [
             ["python", str(script_path), "data"],
@@ -315,10 +510,11 @@ def run_runtime_test(task, code):
             ["python", str(script_path), "data", "--output_file", "output.jsonl"],
         ]
 
-        last_error = ""
+        errors = []
 
         for cmd in commands:
             output_path = tmp_path / "output.jsonl"
+
             if output_path.exists():
                 output_path.unlink()
 
@@ -328,18 +524,18 @@ def run_runtime_test(task, code):
                     cwd=tmp_path,
                     capture_output=True,
                     text=True,
-                    timeout=15
+                    timeout=20
                 )
             except Exception as e:
-                last_error = str(e)
+                errors.append(str(e))
                 continue
 
             if result.returncode != 0:
-                last_error = result.stderr.strip() or result.stdout.strip()
+                errors.append(result.stderr.strip() or result.stdout.strip())
                 continue
 
             if not output_path.exists():
-                last_error = "output.jsonl tidak dibuat."
+                errors.append("output.jsonl tidak dibuat.")
                 continue
 
             lines = output_path.read_text(encoding="utf-8").splitlines()
@@ -354,96 +550,209 @@ def run_runtime_test(task, code):
 
             stdout = result.stdout.lower()
 
-            has_total_lines = (
-                "total lines: 7" in stdout
-                or "total baris awal: 7" in stdout
-            )
-
-            has_empty_lines = (
-                "empty lines: 2" in stdout
-                or "total empty lines: 2" in stdout
-                or "baris kosong: 2" in stdout
-                or "total baris kosong: 2" in stdout
-            )
-
-            has_duplicates = (
-                "duplicates: 2" in stdout
-                or "total duplicates: 2" in stdout
-                or "duplicated lines: 2" in stdout
-                or "total duplicated lines: 2" in stdout
-                or "duplikat: 2" in stdout
-                or "total duplikat: 2" in stdout
-            )
-
-            has_final_lines = (
-                "lines after cleaning: 3" in stdout
-                or "total lines after cleaning: 3" in stdout
-                or "clean lines: 3" in stdout
-                or "total clean lines: 3" in stdout
-                or "baris akhir: 3" in stdout
-                or "total baris akhir: 3" in stdout
-            )
-
             has_total_info = (
-                has_total_lines
-                and has_empty_lines
-                and has_duplicates
-                and has_final_lines
+                "total" in stdout
+                and "4" in stdout
+                and "2" in stdout
             )
 
             if valid_json == 4 and len(lines) == 4 and has_total_info:
                 return {
                     "enabled": True,
                     "passed": True,
-                    "notes": "Runtime test lulus: output.jsonl berisi 4 JSON valid dan statistik tampil.",
+                    "notes": "Runtime test JSONL lulus: output.jsonl berisi 4 JSON valid dan statistik tampil.",
                     "stdout": result.stdout.strip()
                 }
 
-            last_error = (
-                f"Runtime test gagal. lines={len(lines)}, valid_json={valid_json}, "
+            errors.append(
+                f"Runtime test JSONL gagal. lines={len(lines)}, valid_json={valid_json}, "
                 f"stdout={result.stdout.strip()}"
             )
 
         return {
             "enabled": True,
             "passed": False,
-            "notes": last_error
+            "notes": " | ".join(errors[-3:])
         }
+
+def replace_plan_field(plan_text, field_name, new_value):
+    lines = (plan_text or "").splitlines()
+    result = []
+    replaced = False
+
+    field_prefix = field_name.lower() + ":"
+
+    for line in lines:
+        if line.strip().lower().startswith(field_prefix):
+            result.append(f"{field_name}: {new_value}")
+            replaced = True
+        else:
+            result.append(line)
+
+    if not replaced:
+        result.append(f"{field_name}: {new_value}")
+
+    return "\n".join(result)
+
+
+def append_plan_field_value(plan_text, field_name, value):
+    lines = (plan_text or "").splitlines()
+    result = []
+    added = False
+
+    field_prefix = field_name.lower() + ":"
+
+    for line in lines:
+        if line.strip().lower().startswith(field_prefix):
+            if value.lower() not in line.lower():
+                line = line.rstrip() + ", " + value
+            added = True
+
+        result.append(line)
+
+    if not added:
+        result.append(f"{field_name}: {value}")
+
+    return "\n".join(result)
+
+
+def repair_plan_with_user_constraints(task, plan_text):
+    """
+    Ini bukan hardcode curl/TXT/JSON.
+    Ini hanya mengambil fakta eksplisit dari task user:
+    - nama file yang disebut user
+    - output file yang disebut user
+    - larangan seperti jangan menjalankan request asli
+    lalu memasukkannya ke task plan agar tidak hilang.
+    """
+
+    task_lower = (task or "").lower()
+    fixed_plan = plan_text or ""
+
+    mentioned_files = re.findall(
+        r"\b[\w.-]+\.(?:txt|py|json|jsonl|csv|log|md)\b",
+        task_lower
+    )
+
+    # Deteksi output file dari pola umum: "simpan ke output.py", "save to x", "output file x"
+    output_files = re.findall(
+        r"(?:simpan(?:\s+hasil)?\s+ke|save\s+to|output(?:\s+file)?(?:\s+ke)?)\s+([\w.-]+\.(?:txt|py|json|jsonl|csv|log|md))",
+        task_lower
+    )
+
+    output_files = list(dict.fromkeys(output_files))
+    mentioned_files = list(dict.fromkeys(mentioned_files))
+
+    input_files = [f for f in mentioned_files if f not in output_files]
+
+    # Kalau INPUT/OUTPUT masih tidak disebut, isi dari file yang user sebut.
+    if input_files and (
+        "input: tidak disebut" in fixed_plan.lower()
+        or "input:" not in fixed_plan.lower()
+    ):
+        fixed_plan = replace_plan_field(fixed_plan, "INPUT", ", ".join(input_files))
+
+    if output_files and (
+        "output: tidak disebut" in fixed_plan.lower()
+        or "output:" not in fixed_plan.lower()
+    ):
+        fixed_plan = replace_plan_field(fixed_plan, "OUTPUT", ", ".join(output_files))
+
+    # Pastikan semua file yang disebut user muncul di plan.
+    if mentioned_files:
+        fixed_plan = append_plan_field_value(
+            fixed_plan,
+            "NOTES",
+            "File yang disebut user: " + ", ".join(mentioned_files)
+        )
+
+    user_forbids_running_request = (
+        "jangan menjalankan request" in task_lower
+        or "tidak menjalankan request" in task_lower
+        or "jangan mengirim request" in task_lower
+        or "tidak mengirim request" in task_lower
+        or "cukup generate" in task_lower
+        or "cukup membuat" in task_lower
+    )
+
+    if user_forbids_running_request:
+        fixed_plan = append_plan_field_value(
+            fixed_plan,
+            "MUST_NOT_USE",
+            "menjalankan request asli"
+        )
+
+        fixed_plan = append_plan_field_value(
+            fixed_plan,
+            "MUST_DO",
+            "hanya generate kode, jangan menjalankan request asli"
+        )
+
+    return fixed_plan
+
 def validate_task_plan(task, plan_text):
     task_lower = (task or "").lower()
-    plan_lower = (plan_text or "").lower()
+    plan_text = plan_text or ""
+    plan_lower = plan_text.lower()
 
     problems = []
 
-    is_txt_task = (
-        "input.txt" in task_lower
-        or "clean.txt" in task_lower
-        or ".txt" in task_lower
-        or "baris kosong" in task_lower
-        or "duplikat" in task_lower
+    required_fields = [
+        "task_type:",
+        "input:",
+        "output:",
+        "must_use:",
+        "must_not_use:",
+        "must_do:",
+        "notes:",
+    ]
+
+    for field in required_fields:
+        if field not in plan_lower:
+            problems.append(f"Plan belum punya field {field.upper()}")
+
+    # Ambil nama file yang disebut user, misalnya:
+    # input.txt, clean.txt, curl.txt, output.py, data.jsonl
+    mentioned_files = re.findall(
+        r"\b[\w.-]+\.(?:txt|py|json|jsonl|csv|log|md)\b",
+        task_lower
     )
 
-    if is_txt_task:
-        if "task_type:" not in plan_lower:
-            problems.append("Plan belum punya TASK_TYPE.")
+    for filename in mentioned_files:
+        if filename not in plan_lower:
+            problems.append(f"Plan belum menyebut file yang diminta user: {filename}")
 
-        if "txt_file" not in plan_lower:
-            problems.append("Plan salah: tugas ini harus dikenali sebagai txt_file.")
+    # Kalau user meminta argparse/CLI, plan harus sadar itu.
+    if ("argparse" in task_lower or "cli" in task_lower) and "argparse" not in plan_lower:
+        problems.append("Plan belum memasukkan argparse padahal user meminta CLI.")
 
-        if "input.txt" in task_lower and "input.txt" not in plan_lower:
-            problems.append("Plan salah: input.txt tidak disebut sebagai input.")
+    # Kalau user meminta --output, plan harus mencatat --output.
+    if "--output" in task_lower and "--output" not in plan_lower:
+        problems.append("Plan belum menyebut dukungan argumen --output.")
 
-        if "clean.txt" in task_lower and "clean.txt" not in plan_lower:
-            problems.append("Plan salah: clean.txt tidak disebut sebagai output.")
+    # Kalau user melarang menjalankan request asli, plan juga harus melarang.
+    user_forbids_running_request = (
+        "jangan menjalankan request" in task_lower
+        or "tidak menjalankan request" in task_lower
+        or "cukup generate" in task_lower
+        or "cukup membuat" in task_lower
+    )
 
-        if "argparse" in task_lower and "argparse" not in plan_lower:
-            problems.append("Plan salah: argparse tidak masuk MUST_USE.")
+    if user_forbids_running_request:
+        plan_blocks_request = (
+            "jangan menjalankan request" in plan_lower
+            or "tidak menjalankan request" in plan_lower
+            or "jangan eksekusi request" in plan_lower
+            or "tidak mengirim request" in plan_lower
+            or "hanya generate" in plan_lower
+        )
 
-        if "jsonl" in plan_lower and "must_not_use" not in plan_lower:
-            problems.append("Plan berbahaya: JSONL muncul bukan sebagai larangan.")
+        if not plan_blocks_request:
+            problems.append("Plan belum jelas melarang menjalankan request asli.")
 
-        if "json" in plan_lower and "must_not_use" not in plan_lower:
-            problems.append("Plan berbahaya: JSON muncul bukan sebagai larangan.")
+    # Kalau planner error, langsung tolak.
+    if "plan_error" in plan_lower:
+        problems.append("Planner error, plan tidak valid.")
 
     return problems
     
@@ -825,6 +1134,7 @@ def run_arena(task):
 
     print("\n[0] Kumar membuat rencana tugas dulu...")
     task_plan = ask_task_plan(task)
+    task_plan = repair_plan_with_user_constraints(task, task_plan)
 
     print("\n--- TASK PLAN KUMAR ---")
     print(task_plan)

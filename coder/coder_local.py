@@ -338,7 +338,7 @@ def ask_openai_local(prompt):
         "stream": False,
     }
 
-    r = requests.post(CODER_OPENAI_URL, json=payload, timeout=180)
+    r = requests.post(CODER_OPENAI_URL, json=payload, timeout=600)
     r.raise_for_status()
     data = r.json()
 
