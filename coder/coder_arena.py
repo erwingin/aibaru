@@ -1128,6 +1128,61 @@ def save_last_code(code):
     with open(LAST_CODE_FILE, "w", encoding="utf-8") as f:
         f.write(code.strip() + "\n")
 
+def clean_code_output(code):
+    """
+    Membersihkan output model agar runtime test menerima kode Python murni.
+    Ini bukan hardcode jawaban, hanya pembersih format.
+    """
+    text = (code or "").strip()
+
+    if not text:
+        return ""
+
+    lines = text.splitlines()
+
+    # Hapus pembuka markdown: ```python atau ```
+    if lines and lines[0].strip().startswith("```"):
+        lines = lines[1:]
+
+    # Hapus penutup markdown: ```
+    if lines and lines[-1].strip().startswith("```"):
+        lines = lines[:-1]
+
+    return "\n".join(lines).strip()
+
+
+def is_backend_error_code(code):
+    """
+    Mendeteksi error dari backend lokal.
+    Error seperti ini bukan kesalahan coding Kumar,
+    jadi jangan direview MiMo dan jangan masuk memory sebagai pelajaran kode.
+    """
+    text = (code or "").lower()
+
+    return (
+        "source: openai_local_error" in text
+        or "backend lokal gagal menjawab" in text
+        or "httpconnectionpool" in text
+        or "read timed out" in text
+        or "connection refused" in text
+    )
+
+
+def make_backend_error_review(code):
+    return {
+        "score": 0,
+        "verdict": "backend_error",
+        "problems": [
+            "Backend lokal gagal menghasilkan kode.",
+            "Ini error sistem, bukan kesalahan logika coding Kumar."
+        ],
+        "must_fix": [
+            "Restart atau tunggu backend lokal siap.",
+            "Jalankan ulang task setelah backend stabil."
+        ],
+        "notes": (code or "")[:300]
+    }
+
 
 def run_arena(task):
     attempts = []
@@ -1174,6 +1229,33 @@ def run_arena(task):
 
     print("\n[1] Kumar Coder membuat kode pertama berdasarkan task plan...")
     current_code = ask_coder(coder_task)
+    current_code = clean_code_output(current_code)
+
+    if is_backend_error_code(current_code):
+        print("\n[STOP] Backend lokal error. Ini bukan kesalahan Kumar.")
+        current_review = make_backend_error_review(current_code)
+
+        print("\n--- REVIEW PERTAMA ---")
+        print(json.dumps(current_review, ensure_ascii=False, indent=2))
+
+        save_jsonl(ARENA_LOG, {
+            "schema": "coder_arena_1.2",
+            "status": "backend_error",
+            "task": task,
+            "attempts": [
+                {
+                    "round": 0,
+                    "type": "backend_error",
+                    "code": current_code,
+                    "review": current_review,
+                    "score": 0,
+                }
+            ],
+            "accepted": False,
+        })
+
+        print("\nKode tidak dimasukkan ke memory karena ini error backend.")
+        return
 
     print("\n[2] Mengecek apakah Kumar mengulang kesalahan lama...")
 
@@ -1242,6 +1324,11 @@ def run_arena(task):
 
         revision_task = build_revision_task(task, task_plan, current_code, current_review)
         revised_code = ask_coder(revision_task)
+        revised_code = clean_code_output(revised_code)
+
+        if is_backend_error_code(revised_code):
+            print("\n[REVISI ERROR] Backend lokal error saat revisi. Revisi ini diabaikan.")
+            break
 
         similarity = code_similarity(current_code, revised_code)
         print(f"\n[CEK] Kemiripan kode sebelumnya vs revisi {round_no}: {similarity:.2f}")
@@ -1250,6 +1337,11 @@ def run_arena(task):
             print("\n[ANTI-STUCK] Revisi terlalu mirip. Kumar dipaksa tulis ulang dari nol...")
             forced_task = build_forced_rewrite_task(task, task_plan, current_review)
             revised_code = ask_coder(forced_task)
+            revised_code = clean_code_output(revised_code)
+
+            if is_backend_error_code(revised_code):
+                print("\n[FORCED REWRITE ERROR] Backend lokal error. Revisi paksa diabaikan.")
+                break
 
         print(f"\n--- KODE REVISI {round_no} KUMAR ---")
         print(revised_code)
