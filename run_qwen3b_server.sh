@@ -14,5 +14,5 @@ python -m llama_cpp.server \
   --model "$MODEL" \
   --host 127.0.0.1 \
   --port 8000 \
-  --n_ctx 2048 \
+  --n_ctx 8192 \
   --n_threads 2

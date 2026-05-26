@@ -8,7 +8,7 @@ import difflib
 import requests
 import subprocess
 import tempfile
-from runtime_tests import runtime_test_curl_extract_url
+from runtime_tests import runtime_test_curl_extract_url, runtime_test_curl_analyze_structure
 from plan_judge import detect_plan_mismatch, build_replan_note
 from coder_local import ask_coder, validate_code, ask_task_plan
 
@@ -291,6 +291,10 @@ def run_runtime_test(task, code):
     curl_url_result = runtime_test_curl_extract_url(task, code_text)
     if curl_url_result is not None:
         return curl_url_result
+
+    curl_structure_result = runtime_test_curl_analyze_structure(task, code_text)
+    if curl_structure_result is not None:
+        return curl_structure_result
     # ==================================================
     # RUNTIME TEST: CURL TO REQUESTS CONVERTER
     # ==================================================
