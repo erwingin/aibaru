@@ -26,10 +26,85 @@ def extract_code(text):
 
 
 def detect_task_type(task):
+    """
+    Deteksi tipe task secara aman.
+
+    Penting:
+    - curl yang hanya minta URL jangan masuk curl_to_requests.
+    - curl yang minta method/header/cookie/body tapi tidak minta output.py
+      masuk curl_analyze_structure.
+    - curl_to_requests hanya untuk generate kode requests / output.py.
+    """
+
+    def _extract_original_task_local(text):
+        text = str(text or "")
+
+        marker = "TUGAS USER ASLI:"
+        if marker not in text:
+            return text.strip()
+
+        part = text.split(marker, 1)[1]
+
+        stop_markers = [
+            "PLAN SEBELUMNYA DITOLAK.",
+            "Kesalahan plan:",
+            "Peringatan:",
+            "Buat ulang TASK PLAN.",
+        ]
+
+        for stop in stop_markers:
+            if stop in part:
+                part = part.split(stop, 1)[0]
+
+        return part.strip()
+
+    task = _extract_original_task_local(task)
     task_lower = (task or "").lower()
 
     if "curl" in task_lower:
-        return "curl_to_requests"
+        wants_url_only = (
+            "tampilkan url" in task_lower
+            or "ambil url" in task_lower
+            or "ekstrak url" in task_lower
+            or "print url" in task_lower
+            or "menampilkan url" in task_lower
+        )
+
+        wants_analyze_structure = (
+            "method" in task_lower
+            and "url" in task_lower
+            and (
+                "total headers" in task_lower
+                or "total header" in task_lower
+                or "authorization" in task_lower
+                or "cookie" in task_lower
+                or "body" in task_lower
+            )
+            and "output.py" not in task_lower
+            and "generate kode python requests" not in task_lower
+            and "ubah menjadi script python requests" not in task_lower
+            and "ubah menjadi kode python requests" not in task_lower
+            and "script python requests" not in task_lower
+        )
+
+        wants_requests_converter = (
+            "ubah menjadi script python requests" in task_lower
+            or "ubah menjadi kode python requests" in task_lower
+            or "generate kode python requests" in task_lower
+            or "script python requests" in task_lower
+            or "output.py" in task_lower
+        )
+
+        if wants_analyze_structure:
+            return "curl_analyze_structure"
+
+        if wants_url_only and not wants_requests_converter:
+            return "curl_extract_url"
+
+        if wants_requests_converter:
+            return "curl_to_requests"
+
+        return "curl_general"
 
     # TXT dicek sebelum JSON/JSONL agar tugas input.txt tidak kebawa JSONL.
     if (
@@ -38,6 +113,8 @@ def detect_task_type(task):
         or ".txt" in task_lower
         or "baris kosong" in task_lower
         or "duplikat" in task_lower
+        or "hapus baris kosong" in task_lower
+        or "hapus duplikat" in task_lower
     ):
         return "txt_file"
 
@@ -109,14 +186,36 @@ def load_code_lessons(task=None, max_items=5):
         f"- {lesson}" for lesson in lessons
     )
 
+def extract_original_task(text):
+    text = str(text or "")
+
+    marker = "TUGAS USER ASLI:"
+    if marker not in text:
+        return text.strip()
+
+    part = text.split(marker, 1)[1]
+
+    stop_markers = [
+        "PLAN SEBELUMNYA DITOLAK.",
+        "Kesalahan plan:",
+        "Peringatan:",
+        "Buat ulang TASK PLAN.",
+    ]
+
+    for stop in stop_markers:
+        if stop in part:
+            part = part.split(stop, 1)[0]
+
+    return part.strip()
 
 def ask_task_plan(user_task):
     """
     Planner stabil dan deterministic.
     Ini tidak memakai LLM, supaya plan tidak rusak sebelum coding.
     """
-    task_lower = (user_task or "").lower()
-    task_type = detect_task_type(user_task)
+    original_task = extract_original_task(user_task)
+    task_lower = (original_task or "").lower()
+    task_type = detect_task_type(original_task)
 
     input_file = "tidak disebut"
     output_file = "tidak disebut"
@@ -126,6 +225,12 @@ def ask_task_plan(user_task):
 
     if "clean.txt" in task_lower:
         output_file = "clean.txt"
+    
+    if "curl.txt" in task_lower:
+        input_file = "curl.txt"
+
+    if task_type == "curl_extract_url":
+        output_file = "stdout"
 
     must_use = []
     must_not_use = []
@@ -177,21 +282,102 @@ def ask_task_plan(user_task):
             "tulis output satu JSON per baris",
         ])
 
+    elif task_type == "curl_extract_url":
+        must_use.extend([
+            "argparse",
+            "shlex.split",
+        ])
+
+        must_not_use.extend([
+            "requests",
+            "requests.get",
+            "requests.post",
+            "requests.request",
+            "menjalankan request asli",
+            "output.py",
+            "shlex.split per baris",
+            "command.split()[1]",
+            "replace('\\\\n', ' ')",
+            "posix=False",
+            "hanya --input tanpa positional input_file",
+        ])
+
+        must_do.extend([
+            "buat argumen input_file sebagai positional argument agar bisa dijalankan: python script.py curl.txt",
+            "baca seluruh isi file curl.txt dengan file.read() sebagai satu string",
+            "gabungkan curl multiline memakai ' '.join(curl_content.splitlines())",
+            "pecah command gabungan memakai shlex.split dengan default atau posix=True",
+            "setelah shlex.split, iterasi semua token/argumen",
+            "ambil URL dengan mencari token yang diawali http:// atau https://",
+            "tampilkan URL ke stdout",
+        ])
+    elif task_type == "curl_analyze_structure":
+        must_use.extend([
+            "argparse",
+            "shlex.split",
+        ])
+
+        must_not_use.extend([
+            "requests",
+            "requests.get",
+            "requests.post",
+            "requests.request",
+            "menjalankan request asli",
+            "output.py",
+            "command.split()[1]",
+            "replace('\\\\n', ' ')",
+            "posix=False",
+            "shlex.split per baris",
+        ])
+
+        must_do.extend([
+            "buat argumen input_file sebagai positional argument agar bisa dijalankan: python script.py curl.txt",
+            "baca seluruh isi file curl.txt dengan file.read() sebagai satu string",
+            "gabungkan curl multiline memakai ' '.join(curl_content.splitlines())",
+            "pecah command gabungan memakai shlex.split dengan default atau posix=True",
+            "setelah shlex.split, iterasi semua token/argumen",
+            "ambil method dari -X atau --request, default GET, dan POST jika ada --data-raw atau --data",
+            "ambil URL dengan mencari token yang diawali http:// atau https://",
+            "hitung total headers dari jumlah pasangan -H atau --header",
+            "cek apakah ada authorization dari header authorization",
+            "cek apakah ada cookie dari -b, --cookie, atau header cookie",
+            "cek apakah ada body dari --data-raw, --data, atau -d",
+            "tampilkan method, url, total headers, apakah ada authorization, apakah ada cookie, apakah ada body ke stdout",
+        ])
+
     elif task_type == "curl_to_requests":
         must_use.extend([
             "requests",
+            "argparse",
+            "shlex.split",
             "headers",
             "cookies jika ada",
             "timeout",
         ])
+
         must_not_use.extend([
             "mengarang token",
             "menyimpan secret asli ke memory",
+            "menjalankan request asli saat converter berjalan",
+            "command.split()[1]",
+            "replace('\\\\n', ' ')",
+            "posix=False",
+            "shlex.split per baris",
         ])
+
         must_do.extend([
-            "ubah curl menjadi Python requests",
-            "print status_code",
-            "print response",
+            "buat argumen input_file sebagai positional argument agar bisa dijalankan: python script.py curl.txt",
+            "baca seluruh isi file curl.txt dengan file.read() sebagai satu string",
+            "gabungkan curl multiline memakai ' '.join(curl_content.splitlines())",
+            "pecah command gabungan memakai shlex.split dengan default atau posix=True",
+            "ambil URL dengan mencari token yang diawali http:// atau https://",
+            "ambil method dari -X atau --request, default GET, dan POST jika ada body",
+            "ambil headers dari pasangan -H",
+            "ambil cookie jika ada -b atau header cookie",
+            "ambil body dari --data-raw jika ada",
+            "simpan hasil generate ke output.py",
+            "converter hanya membuat kode requests, jangan menjalankan request asli",
+            "tampilkan ringkasan: method, url, total headers, apakah ada cookie, apakah ada body",
         ])
 
     else:
@@ -236,6 +422,15 @@ ATURAN KHUSUS TUGAS JSONL:
 - Jangan pakai json.load(file) untuk JSONL.
 - Output JSONL harus satu JSON per baris.
 """
+    if task_type == "curl_extract_url":
+        task_plan = """TASK_TYPE: curl_extract_url
+INPUT: curl.txt
+OUTPUT: stdout
+MUST_USE: argparse, shlex.split
+MUST_NOT_USE: requests, requests.get, requests.post, requests.request, menjalankan request asli, output.py
+MUST_DO: baca curl.txt, pecah perintah curl dengan shlex.split, ambil URL http/https, tampilkan URL ke stdout
+NOTES: Tugas ini hanya ekstrak URL dari curl. Jangan convert ke requests. Jangan buat output.py."""
+    return task_plan
 
     if task_type == "curl_to_requests":
         return """

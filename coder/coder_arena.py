@@ -8,6 +8,8 @@ import difflib
 import requests
 import subprocess
 import tempfile
+from runtime_tests import runtime_test_curl_extract_url
+from plan_judge import detect_plan_mismatch, build_replan_note
 from coder_local import ask_coder, validate_code, ask_task_plan
 
 
@@ -109,12 +111,87 @@ def save_code_lesson(task, review):
     })
 
 def detect_task_type(task):
+    """
+    Deteksi tipe task secara aman.
+
+    Penting:
+    - curl yang hanya minta URL jangan masuk curl_to_requests.
+    - curl yang minta method/header/cookie/body tapi tidak minta output.py
+      masuk curl_analyze_structure.
+    - curl_to_requests hanya untuk generate kode requests / output.py.
+    """
+
+    def _extract_original_task_local(text):
+        text = str(text or "")
+
+        marker = "TUGAS USER ASLI:"
+        if marker not in text:
+            return text.strip()
+
+        part = text.split(marker, 1)[1]
+
+        stop_markers = [
+            "PLAN SEBELUMNYA DITOLAK.",
+            "Kesalahan plan:",
+            "Peringatan:",
+            "Buat ulang TASK PLAN.",
+        ]
+
+        for stop in stop_markers:
+            if stop in part:
+                part = part.split(stop, 1)[0]
+
+        return part.strip()
+
+    task = _extract_original_task_local(task)
     task_lower = (task or "").lower()
 
     if "curl" in task_lower:
-        return "curl_to_requests"
+        wants_url_only = (
+            "tampilkan url" in task_lower
+            or "ambil url" in task_lower
+            or "ekstrak url" in task_lower
+            or "print url" in task_lower
+            or "menampilkan url" in task_lower
+        )
 
-    # TXT dicek sebelum JSONL/CLI.
+        wants_analyze_structure = (
+            "method" in task_lower
+            and "url" in task_lower
+            and (
+                "total headers" in task_lower
+                or "total header" in task_lower
+                or "authorization" in task_lower
+                or "cookie" in task_lower
+                or "body" in task_lower
+            )
+            and "output.py" not in task_lower
+            and "generate kode python requests" not in task_lower
+            and "ubah menjadi script python requests" not in task_lower
+            and "ubah menjadi kode python requests" not in task_lower
+            and "script python requests" not in task_lower
+        )
+
+        wants_requests_converter = (
+            "ubah menjadi script python requests" in task_lower
+            or "ubah menjadi kode python requests" in task_lower
+            or "generate kode python requests" in task_lower
+            or "script python requests" in task_lower
+            or "output.py" in task_lower
+        )
+
+        if wants_analyze_structure:
+            return "curl_analyze_structure"
+
+        if wants_url_only and not wants_requests_converter:
+            return "curl_extract_url"
+
+        if wants_requests_converter:
+            return "curl_to_requests"
+
+        return "curl_general"
+
+    # TXT dicek sebelum JSON/JSONL agar tugas input.txt tidak kebawa JSONL.
     if (
         "input.txt" in task_lower
         or "clean.txt" in task_lower
@@ -138,10 +215,14 @@ def detect_task_type(task):
     if "requests" in task_lower or "url" in task_lower:
         return "http_requests"
 
+    if "config.json" in task_lower:
+        return "json_config"
+
     if "argparse" in task_lower or "cli" in task_lower:
         return "python_cli"
 
     return "general_python"
+
 
 def save_code_mistake(task, code, review):
     task_type = detect_task_type(task)
@@ -206,7 +287,10 @@ def save_code_mistake(task, code, review):
 def run_runtime_test(task, code):
     task_lower = (task or "").lower()
     code_text = code or ""
-
+        # Runtime test level 1: curl.txt -> tampilkan URL saja.
+    curl_url_result = runtime_test_curl_extract_url(task, code_text)
+    if curl_url_result is not None:
+        return curl_url_result
     # ==================================================
     # RUNTIME TEST: CURL TO REQUESTS CONVERTER
     # ==================================================
@@ -615,6 +699,40 @@ def append_plan_field_value(plan_text, field_name, value):
 
     return "\n".join(result)
 
+def normalize_plan_text(plan):
+    if isinstance(plan, dict):
+        lines = []
+
+        key_map = {
+            "task_type": "TASK_TYPE",
+            "input": "INPUT",
+            "output": "OUTPUT",
+            "must_use": "MUST_USE",
+            "must_not_use": "MUST_NOT_USE",
+            "must_do": "MUST_DO",
+            "notes": "NOTES",
+        }
+
+        # Kalau dict punya key kecil, tetap dibaca.
+        for key, value in plan.items():
+            clean_key = str(key).strip()
+            upper_key = key_map.get(clean_key.lower(), clean_key.upper())
+
+            if value is None:
+                continue
+
+            if isinstance(value, list):
+                value = ", ".join(str(x) for x in value)
+            elif isinstance(value, dict):
+                value = ", ".join(f"{k}={v}" for k, v in value.items())
+            else:
+                value = str(value)
+
+            lines.append(f"{upper_key}: {value}")
+
+        return "\n".join(lines).strip()
+
+    return str(plan or "").strip()
 
 def repair_plan_with_user_constraints(task, plan_text):
     """
@@ -627,7 +745,7 @@ def repair_plan_with_user_constraints(task, plan_text):
     """
 
     task_lower = (task or "").lower()
-    fixed_plan = plan_text or ""
+    fixed_plan = normalize_plan_text(plan_text)
 
     mentioned_files = re.findall(
         r"\b[\w.-]+\.(?:txt|py|json|jsonl|csv|log|md)\b",
@@ -1191,30 +1309,53 @@ def run_arena(task):
     task_plan = ask_task_plan(task)
     task_plan = repair_plan_with_user_constraints(task, task_plan)
 
-    print("\n--- TASK PLAN KUMAR ---")
-    print(task_plan)
+    print("\n[0A] Mengecek apakah plan Kumar ngelantur...")
 
-    plan_problems = validate_task_plan(task, task_plan)
+    plan_check = detect_plan_mismatch(task, task_plan)
 
-    if plan_problems:
-        print("\n[PLAN DITOLAK] Rencana Kumar masih salah:")
-        for item in plan_problems:
+    if not plan_check["ok"]:
+        print("\n[PLAN NGELANTUR] Plan pertama ditolak:")
+        for item in plan_check["errors"]:
             print("-", item)
 
-        save_code_lesson(
-            task,
-            {
-                "score": 0,
-                "verdict": "plan_salah",
-                "problems": plan_problems,
-                "must_fix": [
-                    "Pahami tipe tugas sebelum menulis kode.",
-                    "Buat plan yang sesuai dengan input, output, larangan, dan kewajiban user."
-                ],
-                "notes": "Kode tidak dibuat karena task_plan salah."
-            }
-        )
-        return
+        save_code_lesson(task, plan_check["review"])
+
+        replan_note = build_replan_note(plan_check)
+
+        replan_task = f"""
+TUGAS USER ASLI:
+{task}
+
+{replan_note}
+"""
+
+        print("\n[0B] Kumar belajar dari salah plan dan membuat plan ulang...")
+        task_plan = ask_task_plan(replan_task)
+        task_plan = normalize_plan_text(task_plan)
+
+        print("\n--- TASK PLAN KUMAR SETELAH REPLAN ---")
+        print(task_plan)
+
+        second_plan_check = detect_plan_mismatch(task, task_plan)
+
+        if not second_plan_check["ok"]:
+            print("\n[PLAN MASIH SALAH] Coding dibatalkan agar Kumar tidak belajar dari plan rusak:")
+            for item in second_plan_check["errors"]:
+                print("-", item)
+
+            save_code_lesson(task, second_plan_check["review"])
+
+            save_jsonl(ARENA_LOG, {
+                "schema": "coder_arena_1.3",
+                "status": "plan_rejected",
+                "task": task,
+                "first_plan": replan_task,
+                "final_plan": task_plan,
+                "plan_errors": second_plan_check["errors"],
+                "accepted": False,
+            })
+
+            return
 
     coder_task = f"""
     TUGAS USER:
