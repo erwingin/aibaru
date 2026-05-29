@@ -53,41 +53,82 @@ def candidate_executes_requests(source_code):
 
 def runtime_test_curl_extract_url(task, code):
     """
-    Runtime test level 1B:
-    - curl.txt berisi satu perintah curl asli multiline
-    - kandidat harus menampilkan URL ke stdout
-    - boleh positional: python script.py curl.txt
-    - boleh --input: python script.py --input curl.txt
-    - boleh default curl.txt: python script.py
+    Runtime test level CURL URL:
+    - mendukung URL biasa, --url URL, --url=URL
+    - jika tidak ada URL, wajib print "URL tidak ditemukan"
     - tidak boleh menjalankan request asli
     """
     if not is_curl_extract_url_task(task):
         return None
 
     code_text = code or ""
+    code_lower = code_text.lower()
+
+    uses_argparse = "argparse" in code_lower
+    uses_shlex = "shlex.split" in code_text or "from shlex import split" in code_text
+    no_requests_import = "import requests" not in code_lower and "from requests" not in code_lower
+    candidate_safe = not candidate_executes_requests(code_text)
+
+    if not uses_argparse or not uses_shlex or not no_requests_import or not candidate_safe:
+        return {
+            "enabled": True,
+            "passed": False,
+            "notes": (
+                f"Static check gagal. "
+                f"uses_argparse={uses_argparse}, "
+                f"uses_shlex={uses_shlex}, "
+                f"no_requests_import={no_requests_import}, "
+                f"candidate_safe={candidate_safe}"
+            )
+        }
+
+    test_cases = [
+        {
+            "name": "url_biasa",
+            "expected": "https://example.com/api/profile/me?x=1",
+            "content": "\n".join([
+                "curl 'https://example.com/api/profile/me?x=1' \\",
+                "  -H 'accept: */*' \\",
+                "  -H 'authorization: Bearer <SECRET>' \\",
+                "  --data-raw '{\"taps\":4}'",
+            ]) + "\n",
+        },
+        {
+            "name": "flag_url_spasi",
+            "expected": "https://example.com/api/from-url-space?x=2",
+            "content": "\n".join([
+                "curl --url 'https://example.com/api/from-url-space?x=2' \\",
+                "  -H 'accept: */*'",
+            ]) + "\n",
+        },
+        {
+            "name": "flag_url_sama_dengan",
+            "expected": "https://example.com/api/from-url-equal?x=3",
+            "content": "\n".join([
+                "curl --url='https://example.com/api/from-url-equal?x=3' \\",
+                "  -H 'accept: */*'",
+            ]) + "\n",
+        },
+        {
+            "name": "tanpa_url",
+            "expected": "url tidak ditemukan",
+            "content": "\n".join([
+                "curl \\",
+                "  -H 'accept: */*' \\",
+                "  --data-raw '{\"hello\":\"world\"}'",
+            ]) + "\n",
+        },
+    ]
+
+    errors = []
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
 
-        expected_url = "https://example.com/api/profile/me?x=1"
-
-        curl_lines = [
-            f"curl '{expected_url}' \\",
-            "  -H 'accept: */*' \\",
-            "  -H 'accept-language: en-US,en;q=0.9,id;q=0.8' \\",
-            "  -H 'authorization: Bearer <SECRET>' \\",
-            "  -H 'content-type: application/json' \\",
-            "  -H 'origin: https://app.example.com' \\",
-            "  -H 'referer: https://app.example.com/' \\",
-            "  -H 'user-agent: Mozilla/5.0' \\",
-            "  --data-raw '{\"taps\":4,\"time\":1779782846304}'",
-        ]
-
-        curl_file = tmp_path / "curl.txt"
-        curl_file.write_text("\n".join(curl_lines) + "\n", encoding="utf-8")
-
         script_path = tmp_path / "candidate.py"
         script_path.write_text(code_text, encoding="utf-8")
+
+        curl_file = tmp_path / "curl.txt"
 
         commands = [
             [sys.executable, str(script_path), "curl.txt"],
@@ -95,88 +136,61 @@ def runtime_test_curl_extract_url(task, code):
             [sys.executable, str(script_path)],
         ]
 
-        errors = []
+        for case in test_cases:
+            curl_file.write_text(case["content"], encoding="utf-8")
 
-        for cmd in commands:
-            try:
-                result = subprocess.run(
-                    cmd,
-                    cwd=tmp_path,
-                    capture_output=True,
-                    text=True,
-                    timeout=20
+            case_passed = False
+            case_errors = []
+
+            for cmd in commands:
+                try:
+                    result = subprocess.run(
+                        cmd,
+                        cwd=tmp_path,
+                        capture_output=True,
+                        text=True,
+                        timeout=20
+                    )
+                except Exception as e:
+                    case_errors.append(f"cmd={cmd} error={e}")
+                    continue
+
+                stdout = (result.stdout or "").strip()
+                stderr = (result.stderr or "").strip()
+
+                if case["name"] == "tanpa_url":
+                    prints_expected = case["expected"] in stdout.lower()
+                else:
+                    prints_expected = case["expected"] in stdout
+
+                if result.returncode == 0 and prints_expected:
+                    case_passed = True
+                    break
+
+                case_errors.append(
+                    "cmd gagal. "
+                    f"case={case['name']}, "
+                    f"cmd={' '.join(cmd)}, "
+                    f"returncode={result.returncode}, "
+                    f"prints_expected={prints_expected}, "
+                    f"stdout={stdout}, "
+                    f"stderr={stderr}"
                 )
-            except Exception as e:
-                errors.append(f"cmd={cmd} error={e}")
-                continue
 
-            stdout = (result.stdout or "").strip()
-            stderr = (result.stderr or "").strip()
-            code_lower = code_text.lower()
-
-            uses_argparse = "argparse" in code_lower
-            uses_shlex = "shlex.split" in code_text or "from shlex import split" in code_text
-            prints_expected_url = expected_url in stdout
-            no_requests_import = "import requests" not in code_lower and "from requests" not in code_lower
-            candidate_safe = not candidate_executes_requests(code_text)
-
-            if (
-                result.returncode == 0
-                and uses_argparse
-                and uses_shlex
-                and prints_expected_url
-                and no_requests_import
-                and candidate_safe
-            ):
+            if not case_passed:
+                errors.extend(case_errors[-3:])
                 return {
                     "enabled": True,
-                    "passed": True,
-                    "notes": "Runtime test CURL URL lulus: URL berhasil diekstrak ke stdout tanpa menjalankan request asli.",
-                    "stdout": stdout
+                    "passed": False,
+                    "notes": " | ".join(errors[-3:])
                 }
 
-            errors.append(
-                "cmd gagal. "
-                f"cmd={' '.join(cmd)}, "
-                f"returncode={result.returncode}, "
-                f"uses_argparse={uses_argparse}, "
-                f"uses_shlex={uses_shlex}, "
-                f"prints_expected_url={prints_expected_url}, "
-                f"no_requests_import={no_requests_import}, "
-                f"candidate_safe={candidate_safe}, "
-                f"stdout={stdout}, "
-                f"stderr={stderr}"
-            )
-
-        return {
-            "enabled": True,
-            "passed": False,
-            "notes": " | ".join(errors[-3:])
-        }
-def is_curl_analyze_structure_task(task):
-    task_lower = (task or "").lower()
-
-    wants_structure = (
-        "curl" in task_lower
-        and "method" in task_lower
-        and "url" in task_lower
-        and (
-            "total headers" in task_lower
-            or "total header" in task_lower
-            or "authorization" in task_lower
-            or "cookie" in task_lower
-            or "body" in task_lower
-        )
-    )
-
-    wants_converter = (
-        "output.py" in task_lower
-        or "generate kode python requests" in task_lower
-        or "ubah menjadi script python requests" in task_lower
-    )
-
-    return wants_structure and not wants_converter
-
+    return {
+        "enabled": True,
+        "passed": True,
+        "notes": "Runtime test CURL URL lulus: URL biasa, --url URL, --url=URL, dan kondisi tanpa URL berhasil.",
+        "stdout": "semua case lulus"
+    }
 
 def runtime_test_curl_analyze_structure(task, code):
     """

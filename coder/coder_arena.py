@@ -914,6 +914,22 @@ def block_repeated_mistake(task, code):
             if not has_http_fallback:
                 blocked.append("Kumar belum fallback mencari URL biasa http:// atau https://.")
 
+        if "--url" in task_lower:
+            bad_equal_split = (
+                "split('=')[1]" in code_lower
+                or 'split("=")[1]' in code_lower
+                or ".split('=')[1]" in code_lower
+                or '.split("=")[1]' in code_lower
+            )
+
+            good_equal_split = (
+                "split('=', 1)" in code_lower
+                or 'split("=", 1)' in code_lower
+            )
+
+            if bad_equal_split and not good_equal_split:
+                blocked.append("Kumar memakai split('=')[1] untuk --url=, ini memotong URL query. Gunakan split('=', 1)[1].")
+
         if "url tidak ditemukan" in task_lower and "url tidak ditemukan" not in code_lower:
             blocked.append("Kumar belum menampilkan pesan URL tidak ditemukan saat URL kosong.")
 
@@ -1346,6 +1362,37 @@ def make_backend_error_review(code):
     }
 
 
+def auto_patch_common_bugs(task, code):
+    """
+    Auto-patch bug mekanis kecil.
+    Ini bukan hardcode jawaban, hanya memperbaiki pola Python yang jelas salah.
+    """
+    if not code:
+        return code
+
+    task_lower = (task or "").lower()
+    fixed = code
+
+    if "curl" in task_lower and "--url" in task_lower:
+        fixed = fixed.replace("split('=')[1]", "split('=', 1)[1]")
+        fixed = fixed.replace('split("=")[1]', 'split("=", 1)[1]')
+
+    if "shlex.split" in fixed and "import shlex" not in fixed:
+        lines = fixed.splitlines()
+        insert_at = 0
+
+        for i, line in enumerate(lines):
+            if line.startswith("import ") or line.startswith("from "):
+                insert_at = i + 1
+
+        lines.insert(insert_at, "import shlex")
+        fixed = "\n".join(lines)
+
+    if fixed != code:
+        print("[AUTO-PATCH] Bug mekanis umum diperbaiki sebelum review.")
+
+    return fixed
+
 def run_arena(task):
     attempts = []
 
@@ -1415,6 +1462,7 @@ TUGAS USER ASLI:
     print("\n[1] Kumar Coder membuat kode pertama berdasarkan task plan...")
     current_code = ask_coder(coder_task)
     current_code = clean_code_output(current_code)
+    current_code = auto_patch_common_bugs(task, current_code)
 
     if is_backend_error_code(current_code):
         print("\n[STOP] Backend lokal error. Ini bukan kesalahan Kumar.")
@@ -1530,6 +1578,7 @@ TUGAS USER ASLI:
             previous_code=current_code,
         )
         revised_code = clean_code_output(revised_code)
+        revised_code = auto_patch_common_bugs(task, revised_code)
 
         if is_backend_error_code(revised_code):
             print("\n[REVISI ERROR] Backend lokal error saat revisi. Revisi ini diabaikan.")
@@ -1543,6 +1592,7 @@ TUGAS USER ASLI:
             forced_task = build_forced_rewrite_task(task, task_plan, current_review)
             revised_code = ask_coder(forced_task)
             revised_code = clean_code_output(revised_code)
+            revised_code = auto_patch_common_bugs(task, revised_code)
 
             if is_backend_error_code(revised_code):
                 print("\n[FORCED REWRITE ERROR] Backend lokal error. Revisi paksa diabaikan.")
