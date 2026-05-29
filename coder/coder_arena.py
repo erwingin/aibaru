@@ -177,7 +177,7 @@ def detect_task_type(task):
             or "ubah menjadi kode python requests" in task_lower
             or "generate kode python requests" in task_lower
             or "script python requests" in task_lower
-            or "output.py" in task_lower
+            or ("output.py" in task_lower and "requests" in task_lower)
         )
 
         if wants_analyze_structure:
@@ -879,6 +879,46 @@ def validate_task_plan(task, plan_text):
     return problems
     
 def block_repeated_mistake(task, code):
+    task_type = detect_task_type(task)
+
+    # Task curl bukan task TXT cleaner.
+    # Jangan blokir curl hanya karena ada aturan lama TXT/JSONL.
+    if str(task_type).startswith("curl"):
+        task_lower = (task or "").lower()
+        code_lower = (code or "").lower()
+        blocked = []
+
+        if "--url" in task_lower:
+            has_url_space = (
+                "token == '--url'" in code_lower
+                or 'token == "--url"' in code_lower
+                or "startswith('--url')" in code_lower
+                or 'startswith("--url")' in code_lower
+                or "index(token) + 1" in code_lower
+                or "i + 1" in code_lower
+            )
+            has_url_equal = (
+                "startswith('--url=')" in code_lower
+                or 'startswith("--url=")' in code_lower
+                or "--url=" in code_lower
+            )
+
+            if not has_url_space:
+                blocked.append("Kumar belum menangani format --url URL.")
+
+            if not has_url_equal:
+                blocked.append("Kumar belum menangani format --url=https://...")
+
+        if "token biasa" in task_lower:
+            has_http_fallback = "http://" in code_lower and "https://" in code_lower
+            if not has_http_fallback:
+                blocked.append("Kumar belum fallback mencari URL biasa http:// atau https://.")
+
+        if "url tidak ditemukan" in task_lower and "url tidak ditemukan" not in code_lower:
+            blocked.append("Kumar belum menampilkan pesan URL tidak ditemukan saat URL kosong.")
+
+        return blocked
+
     task_lower = (task or "").lower()
     code_text = code or ""
     code_lower = code_text.lower()
@@ -1416,11 +1456,11 @@ TUGAS USER ASLI:
             "verdict": "perlu_revisi",
             "problems": blocked,
             "must_fix": [
-                "Tulis ulang dari nol sesuai tipe tugas.",
-                "Jangan membawa pola dari tugas lain.",
-                "Gunakan aturan khusus task_type sebelum membuat kode."
+                "Untuk task curl, baca curl.txt sebagai satu string.",
+                "Gabungkan curl multiline sebelum shlex.split.",
+                "Jika task meminta --url, wajib cek token --url dan ambil token setelahnya."
             ],
-            "notes": "Diblokir oleh mistake gate sebelum review MiMo."
+            "notes": "Diblokir oleh mistake gate curl sebelum review MiMo."
         }
     else:
         print("\n[2] MiMo Guru mengkritik kode pertama...")
@@ -1468,7 +1508,27 @@ TUGAS USER ASLI:
         print(f"\n[REVISI {round_no}] Skor belum cukup. Kumar memperbaiki kode berdasarkan kritik...")
 
         revision_task = build_revision_task(task, task_plan, current_code, current_review)
-        revised_code = ask_coder(revision_task)
+
+        revision_feedback = []
+        if isinstance(current_review, dict):
+            problems = current_review.get("problems", [])
+            must_fix = current_review.get("must_fix", [])
+
+            if isinstance(problems, list):
+                revision_feedback.extend(problems)
+            elif problems:
+                revision_feedback.append(str(problems))
+
+            if isinstance(must_fix, list):
+                revision_feedback.extend(must_fix)
+            elif must_fix:
+                revision_feedback.append(str(must_fix))
+
+        revised_code = ask_coder(
+            revision_task,
+            feedback=revision_feedback,
+            previous_code=current_code,
+        )
         revised_code = clean_code_output(revised_code)
 
         if is_backend_error_code(revised_code):
@@ -1478,8 +1538,8 @@ TUGAS USER ASLI:
         similarity = code_similarity(current_code, revised_code)
         print(f"\n[CEK] Kemiripan kode sebelumnya vs revisi {round_no}: {similarity:.2f}")
 
-        if is_code_too_similar(current_code, revised_code):
-            print("\n[ANTI-STUCK] Revisi terlalu mirip. Kumar dipaksa tulis ulang dari nol...")
+        if revised_code.strip() == current_code.strip():
+            print("\n[ANTI-STUCK] Revisi sama persis. Kumar dipaksa tulis ulang dari nol...")
             forced_task = build_forced_rewrite_task(task, task_plan, current_review)
             revised_code = ask_coder(forced_task)
             revised_code = clean_code_output(revised_code)
@@ -1487,6 +1547,8 @@ TUGAS USER ASLI:
             if is_backend_error_code(revised_code):
                 print("\n[FORCED REWRITE ERROR] Backend lokal error. Revisi paksa diabaikan.")
                 break
+        elif is_code_too_similar(current_code, revised_code):
+            print("\n[ANTI-STUCK] Revisi mirip, tapi tetap diterima sebagai patch kecil.")
 
         print(f"\n--- KODE REVISI {round_no} KUMAR ---")
         print(revised_code)
@@ -1505,11 +1567,11 @@ TUGAS USER ASLI:
                 "verdict": "perlu_revisi",
                 "problems": blocked,
                 "must_fix": [
-                    "Tulis ulang dari nol. Kesalahan ini sudah pernah terjadi.",
-                    "Jangan memakai pola JSONL untuk tugas TXT.",
-                    "Ikuti tipe tugas user dengan ketat."
+                    "Perbaiki parser curl, bukan tugas TXT/JSONL.",
+                    "Tambahkan logika: jika token == \"--url\", ambil token berikutnya sebagai URL.",
+                    "Ambil URL dari --url lebih dulu, lalu fallback ke token http:// atau https://."
                 ],
-                "notes": "Revisi diblokir karena mengulang kesalahan lama."
+                "notes": "Revisi diblokir karena belum menangani aturan curl yang diminta task."
             }
         else:
             print(f"\n[REVIEW {round_no}] MiMo Guru mengecek kode revisi...")

@@ -92,7 +92,7 @@ def detect_task_type(task):
             or "ubah menjadi kode python requests" in task_lower
             or "generate kode python requests" in task_lower
             or "script python requests" in task_lower
-            or "output.py" in task_lower
+            or ("output.py" in task_lower and "requests" in task_lower)
         )
 
         if wants_analyze_structure:
@@ -324,90 +324,88 @@ def ask_task_plan(user_task):
             "requests.request",
             "menjalankan request asli",
             "output.py",
+            "parsing curl per baris",
+            "shlex.split per baris",
             "command.split()[1]",
             "replace('\\\\n', ' ')",
             "posix=False",
-            "shlex.split per baris",
-            "for line in lines untuk parsing curl",
-            "line.startswith('-H')",
-            "line.startswith('--data')",
-            "line.split()[1]",
-            "import shlex tapi tidak memakai shlex.split",
-            "has_authorization = False tanpa pernah diubah menjadi True",
             "file.readlines() untuk curl parser",
-            "curl_content.splitlines() saat curl_content berupa list",
+            "import shlex tapi tidak memakai shlex.split",
+            "has_authorization selalu False",
             "headers.append(tokens[i][2:])",
             "tokens[i].startswith('-H') lalu mengambil tokens[i][2:]",
-            "has_authorization selalu False",
         ])
 
         must_do.extend([
             "buat argumen input_file sebagai positional argument agar bisa dijalankan: python script.py curl.txt",
-            "baca seluruh isi file curl.txt dengan file.read() sebagai satu string",
-            "gabungkan curl multiline memakai ' '.join(curl_content.splitlines())",
-            "pecah command gabungan memakai shlex.split dengan default atau posix=True",
-            "setelah shlex.split, iterasi semua token/argumen",
-            "ambil method dari -X atau --request, default GET, dan POST jika ada --data-raw atau --data",
-            "ambil URL dengan mencari token yang diawali http:// atau https://",
-            "hitung total headers dari jumlah pasangan -H atau --header",
-            "cek apakah ada authorization dari header authorization",
-            "cek apakah ada cookie dari -b, --cookie, atau header cookie",
-            "cek apakah ada body dari --data-raw, --data, atau -d",
-            "buat combined_command = ' '.join(curl_content.splitlines())",
-            "buat tokens = shlex.split(combined_command)",
+            "baca curl.txt memakai file.read() sebagai satu string",
+            "gabungkan curl multiline dengan combined_command = ' '.join(curl_content.splitlines())",
+            "pecah command memakai tokens = shlex.split(combined_command)",
+
             "gunakan while i < len(tokens) untuk membaca token dan token setelahnya",
-            "jika token adalah -X atau --request, method = tokens[i + 1].upper()",
-            "jika token adalah -H atau --header, header = tokens[i + 1], lalu total_headers bertambah 1",
+            "pakai pola loop aman: token = tokens[i]",
+            "jika token == 'curl', lewati dengan i += 1 lalu continue",
+            "jika token tidak dikenal, di akhir loop wajib i += 1 agar tidak infinite loop",
+
+            "jika token diawali http:// atau https://, simpan sebagai url lalu i += 1 dan continue",
+            "jika token adalah -X atau --request, ambil method dari tokens[i + 1].upper() lalu i += 2 dan continue",
+
+            "jika token adalah -H atau --header, ambil header = tokens[i + 1]",
+            "untuk header dari -H, jangan pakai shlex.split lagi; pakai header.split(':', 1)",
+            "hitung total headers dari jumlah header -H atau --header",
             "jika header.lower().startswith('authorization:'), has_authorization = True",
             "jika header.lower().startswith('cookie:'), has_cookie = True",
-            "jika token adalah -b atau --cookie, has_cookie = True",
-            "jika token adalah --data-raw, --data, --data-binary, atau -d, has_body = True",
+            "setelah parsing header, i += 2 lalu continue",
+
+            "jika token adalah -b atau --cookie, has_cookie = True lalu i += 2 dan continue",
+            "jika token adalah --data-raw, --data, --data-binary, atau -d, has_body = True lalu i += 2 dan continue",
             "jika ada body dan method masih GET, ubah method menjadi POST",
-            "jika token diawali http:// atau https://, simpan sebagai url",
-            "baca file memakai file.read(), jangan file.readlines()",
-            "gabungkan multiline dengan combined_command = ' '.join(curl_content.splitlines())",
-            "buat tokens = shlex.split(combined_command)",
-            "gunakan while loop dengan index i agar bisa mengambil token berikutnya",
-            "jika token == '-H' atau token == '--header', ambil header dari tokens[i + 1]",
-            "jangan mengambil header dari tokens[i][2:]",
-            "cek authorization dari header.lower().startswith('authorization:')",
-            "cek cookie dari header.lower().startswith('cookie:') atau token -b/--cookie",
-            "jika token adalah --data-raw, --data, --data-binary, atau -d, has_body = True",
+
             "tampilkan method, url, total headers, apakah ada authorization, apakah ada cookie, apakah ada body ke stdout",
         ])
 
     elif task_type == "curl_to_requests":
         must_use.extend([
-            "requests",
             "argparse",
             "shlex.split",
-            "headers",
-            "cookies jika ada",
-            "timeout",
+            "output.py",
+            "timeout=20",
         ])
 
         must_not_use.extend([
             "mengarang token",
             "menyimpan secret asli ke memory",
             "menjalankan request asli saat converter berjalan",
+            "parsing curl per baris",
             "command.split()[1]",
-            "replace('\\\\n', ' ')",
             "posix=False",
-            "shlex.split per baris",
+            "while loop tanpa memastikan index i selalu bertambah",
+            "body = ' '.join(tokens[i + 1:]) yang memakan semua token sampai akhir",
+            "membuat string body output.py dengan triple quote manual",
         ])
 
         must_do.extend([
-            "buat argumen input_file sebagai positional argument agar bisa dijalankan: python script.py curl.txt",
-            "baca seluruh isi file curl.txt dengan file.read() sebagai satu string",
-            "gabungkan curl multiline memakai ' '.join(curl_content.splitlines())",
-            "pecah command gabungan memakai shlex.split dengan default atau posix=True",
-            "ambil URL dengan mencari token yang diawali http:// atau https://",
-            "ambil method dari -X atau --request, default GET, dan POST jika ada body",
-            "ambil headers dari pasangan -H",
-            "ambil cookie jika ada -b atau header cookie",
-            "ambil body dari --data-raw jika ada",
-            "simpan hasil generate ke output.py",
-            "converter hanya membuat kode requests, jangan menjalankan request asli",
+            "baca curl.txt memakai file.read() sebagai satu string",
+            "gabungkan curl multiline dengan combined_command = ' '.join(curl_content.splitlines())",
+            "pecah command memakai tokens = shlex.split(combined_command)",
+            "gunakan while i < len(tokens) untuk membaca token dan token setelahnya",
+
+            "pakai pola loop aman: token = tokens[i]",
+            "jika token == 'curl', lewati dengan i += 1 lalu continue",
+            "jika token tidak dikenal, di akhir loop wajib i += 1 agar tidak infinite loop",
+
+            "ambil URL dari token yang diawali http:// atau https://, lalu i += 1 dan continue",
+            "ambil method dari -X atau --request dengan membaca tokens[i + 1], lalu i += 2 dan continue",
+            "ambil headers dari -H atau --header dengan membaca tokens[i + 1], lalu i += 2 dan continue",
+            "ambil cookie dari -b, --cookie, atau header cookie jika ada",
+            "ambil body dari --data-raw, --data, --data-binary, atau -d dengan membaca hanya tokens[i + 1], lalu i += 2 dan continue",
+            "jika ada body dan method masih GET, ubah method menjadi POST",
+
+            "buat output.py yang self-contained berisi import requests, method, url, headers, cookies, dan body",
+            "gunakan repr() untuk menulis method, url, headers, cookies, dan body ke output.py agar valid Python",
+            "output.py harus berisi kode requests dengan timeout=20",
+            "converter hanya menulis output.py, tidak menjalankan request asli",
+
             "tampilkan ringkasan: method, url, total headers, apakah ada cookie, apakah ada body",
         ])
 
@@ -541,6 +539,48 @@ print("Dummy backend aktif. Jalankan dengan CODER_BACKEND=openai_local agar Kuma
 """
 
 
+def _read_openai_stream_response(response):
+    full_text = ""
+
+    for line in response.iter_lines(decode_unicode=True):
+        if not line:
+            continue
+
+        line = line.strip()
+
+        if not line.startswith("data:"):
+            continue
+
+        data_text = line[len("data:"):].strip()
+
+        if data_text == "[DONE]":
+            break
+
+        try:
+            data = json.loads(data_text)
+        except Exception:
+            continue
+
+        choices = data.get("choices") or []
+        if not choices:
+            continue
+
+        choice = choices[0]
+        delta = choice.get("delta") or {}
+        content = delta.get("content")
+
+        if content:
+            full_text += content
+            continue
+
+        message = choice.get("message") or {}
+        content = message.get("content")
+        if content:
+            full_text += content
+
+    return full_text
+
+
 def ask_openai_local(prompt):
     payload = {
         "model": CODER_MODEL,
@@ -560,19 +600,24 @@ def ask_openai_local(prompt):
         ],
         "temperature": 0.1,
         "top_p": 0.9,
-        "max_tokens": 1800,
-        "stream": False,
+        "max_tokens": 900,
+        "stream": True,
     }
 
-    r = requests.post(CODER_OPENAI_URL, json=payload, timeout=600)
+    r = requests.post(
+        CODER_OPENAI_URL,
+        json=payload,
+        timeout=900,
+        stream=True,
+    )
     r.raise_for_status()
-    data = r.json()
 
-    try:
-        return data["choices"][0]["message"]["content"]
-    except Exception:
-        return json.dumps(data, ensure_ascii=False, indent=2)
+    answer = _read_openai_stream_response(r)
 
+    if answer.strip():
+        return answer
+
+    return "# SOURCE: openai_local_error\\n# Backend streaming tidak mengirim content."
 
 def ask_coder(user_task, feedback=None, previous_code=None):
     prompt = build_coder_prompt(user_task, feedback=feedback, previous_code=previous_code)
@@ -747,11 +792,45 @@ def _extract_must_not_use(text):
     return items
 
 
+def _summarize_success_pattern(code):
+    """
+    Ringkas pola sukses tanpa memberi kode full.
+    Tujuannya: mengingatkan Kumar pada pengalaman, bukan menyuruh copy-paste.
+    """
+    code = str(code or "")
+    low = code.lower()
+
+    patterns = []
+
+    if "file.read()" in code or ".read()" in code:
+        patterns.append("baca file sebagai satu string dengan file.read()")
+
+    if "splitlines()" in code or "replace(" in code:
+        patterns.append("gabungkan curl multiline sebelum parsing")
+
+    if "shlex.split" in code:
+        patterns.append("pakai shlex.split pada command utuh, bukan per baris")
+
+    if "http://" in low or "https://" in low:
+        patterns.append("cari URL dari token yang diawali http:// atau https://")
+
+    if "argparse" in low:
+        patterns.append("gunakan argparse untuk input file CLI")
+
+    if not patterns:
+        patterns.append("ikuti pola umum dari solusi sukses sebelumnya, tapi tulis ulang sesuai task sekarang")
+
+    return patterns
+
+
 def load_relevant_experience(user_task, max_items=5):
     """
-    Mengambil pengalaman yang relevan dari memory.
-    Tidak memakai aturan per tipe tugas.
-    Sistem ini memilih berdasarkan kemiripan task + plan.
+    Mengambil pengalaman relevan dari memory.
+
+    Prinsip:
+    - Memory sukses dipakai sebagai pengalaman positif.
+    - Kode sukses tidak diberikan full agar Kumar tidak copy-paste.
+    - Memory kesalahan tetap dipakai sebagai peringatan.
     """
 
     current_text = user_task or ""
@@ -759,6 +838,7 @@ def load_relevant_experience(user_task, max_items=5):
     forbidden_terms = _extract_must_not_use(current_text)
 
     memory_files = [
+        ("code_memory.jsonl", "success"),
         ("code_lessons.jsonl", "lesson"),
         ("code_mistakes.jsonl", "mistake"),
     ]
@@ -784,10 +864,6 @@ def load_relevant_experience(user_task, max_items=5):
             old_task = str(item.get("task", "") or "")
             old_task_lower = old_task.lower()
 
-            # Kalau plan sekarang melarang sesuatu,
-            # jangan ambil pengalaman dari tugas lama yang memang meminta hal terlarang itu.
-            # Contoh: plan sekarang MUST_NOT_USE jsonl,
-            # maka lesson dari tugas lama yang memang meminta jsonl tidak dipakai.
             conflict = False
             for forbidden in forbidden_terms:
                 forbidden = forbidden.strip().lower()
@@ -801,18 +877,40 @@ def load_relevant_experience(user_task, max_items=5):
             if conflict:
                 continue
 
-            item_text = _memory_to_text(item)
+            if source == "success":
+                item_text = "\n".join([
+                    old_task,
+                    str(item.get("score", "")),
+                    str(item.get("verdict", "")),
+                    str(item.get("notes", "")),
+                ])
+            else:
+                item_text = _memory_to_text(item)
+
             item_tokens = _memory_tokens(item_text)
 
             if not item_tokens:
                 continue
 
             overlap = len(current_tokens & item_tokens)
-
-            # Tambah bobot kecil kalau task lama mirip task sekarang.
             task_overlap = len(_memory_tokens(old_task) & current_tokens)
 
             score = overlap + (task_overlap * 2)
+
+            memory_source = str(item.get("source", "")).lower()
+            if memory_source == "manual_teacher_priority":
+                score += 80
+            elif memory_source == "manual_teacher":
+                score += 40
+
+            if source == "success":
+                try:
+                    old_score = int(item.get("score") or 0)
+                except Exception:
+                    old_score = 0
+
+                if old_score >= 85:
+                    score += 15
 
             if score <= 0:
                 continue
@@ -835,6 +933,28 @@ def load_relevant_experience(user_task, max_items=5):
 
     for idx, cand in enumerate(selected, start=1):
         item = cand["item"]
+        source = cand["source"]
+
+        lines.append(f"\nPengalaman {idx}:")
+
+        if source == "success":
+            old_score = item.get("score", "")
+            old_task = item.get("task", "")
+            notes = item.get("notes", "")
+            code = item.get("code", "")
+
+            lines.append(f"- Tugas mirip pernah lulus dengan score {old_score}.")
+            if old_task:
+                lines.append(f"- Tugas lama: {old_task}")
+
+            for pattern in _summarize_success_pattern(code):
+                lines.append(f"- Pola sukses yang terbukti: {pattern}")
+
+            if notes:
+                lines.append(f"- Catatan hasil: {notes}")
+
+            lines.append("- Jangan copy-paste kode lama mentah-mentah. Gunakan pengalaman ini untuk menulis solusi baru sesuai task sekarang.")
+            continue
 
         problems = item.get("problems", [])
         must_fix = item.get("must_fix", [])
@@ -849,8 +969,6 @@ def load_relevant_experience(user_task, max_items=5):
         fix_rule = item.get("fix_rule", "")
         notes = item.get("notes", "")
 
-        lines.append(f"\nPengalaman {idx}:")
-
         if mistake:
             lines.append(f"- Kesalahan lama: {mistake}")
 
@@ -861,7 +979,10 @@ def load_relevant_experience(user_task, max_items=5):
         if fix_rule:
             lines.append(f"- Cara menghindari: {fix_rule}")
 
-        for fix in must_fix[:3]:
+        memory_source = str(item.get("source", "")).lower()
+        max_fix = 9 if memory_source in ("manual_teacher", "manual_teacher_priority") else 3
+
+        for fix in must_fix[:max_fix]:
             if fix:
                 lines.append(f"- Wajib diperbaiki: {fix}")
 
@@ -870,7 +991,6 @@ def load_relevant_experience(user_task, max_items=5):
 
     return "\n".join(lines)
 
-
 def build_coder_prompt(user_task, feedback=None, previous_code=None):
     """
     Prompt baru:
@@ -878,7 +998,10 @@ def build_coder_prompt(user_task, feedback=None, previous_code=None):
     - Mengandalkan task plan + pengalaman memory.
     """
 
-    experiences = load_relevant_experience(user_task, max_items=5)
+    experiences = load_relevant_experience(user_task, max_items=2)
+
+    if len(experiences) > 2500:
+        experiences = experiences[:2500] + "\n... MEMORY DIPOTONG AGAR PROMPT TIDAK TERLALU PANJANG ..."
 
     extra = ""
 
@@ -888,9 +1011,21 @@ def build_coder_prompt(user_task, feedback=None, previous_code=None):
             extra += f"- {item}\n"
 
     if previous_code:
-        extra += """
-KODE SEBELUMNYA ADA, TAPI JANGAN DITIRU BUTA-BUTA.
-Kalau kode lama bertentangan dengan task plan atau memory, tulis ulang dari nol.
+        extra += f"""
+MODE REVISI:
+- Kode sebelumnya adalah bahan utama untuk diperbaiki, bukan dibuang.
+- Jangan tulis ulang dari nol kecuali kode lama benar-benar salah total.
+- Pertahankan fitur yang sudah benar.
+- Perbaiki hanya bagian yang disebut feedback/runtime error.
+- Jangan menghapus fitur penting saat memperbaiki bug kecil.
+- Jika error hanya NameError: shlex is not defined, cukup tambahkan import shlex di atas.
+- Untuk task curl --url, jangan hapus logika token == '--url'.
+- Untuk task curl --url, jangan hapus logika token.startswith('--url=').
+- Untuk task curl --url, jangan hapus fallback token http:// atau https://.
+- Untuk task curl, tetap tampilkan "URL tidak ditemukan" jika URL kosong.
+
+KODE SEBELUMNYA YANG HARUS DIPATCH:
+{previous_code}
 """
 
     return f"""Kamu adalah Kumar Coder.
