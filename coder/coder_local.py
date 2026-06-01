@@ -841,6 +841,11 @@ def load_relevant_experience(user_task, max_items=5):
         ("code_memory.jsonl", "success"),
         ("code_lessons.jsonl", "lesson"),
         ("code_mistakes.jsonl", "mistake"),
+
+        # Bahan belajar bersih.
+        # Ini bukan memory sukses dan bukan auto-patch.
+        # Isinya konsep kecil agar Kumar belajar pola curl token.
+        ("dataset_curl_flags.jsonl", "study"),
     ]
 
     candidates = []
@@ -902,6 +907,12 @@ def load_relevant_experience(user_task, max_items=5):
                 score += 80
             elif memory_source == "manual_teacher":
                 score += 40
+
+            # Dataset belajar diberi boost kecil.
+            # Tidak sebesar manual_teacher_priority agar tidak memaksa jawaban,
+            # hanya membantu contoh yang relevan muncul.
+            if source == "study":
+                score += 25
 
             if source == "success":
                 try:

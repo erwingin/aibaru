@@ -980,7 +980,7 @@ def block_repeated_mistake(task, code):
         )
     )
 
-    if is_header_count_task:
+    if False and is_header_count_task:
         has_shlex_split = "shlex.split(" in code_lower
         # splitlines boleh dipakai untuk menggabungkan curl multiline
         # sebelum shlex.split. Yang dilarang adalah menghitung header
@@ -1772,11 +1772,26 @@ TUGAS USER ASLI:
             break
 
     if accepted:
-        status = "accepted"
         save_last_code(best_code)
-        save_code_memory(task, best_code, best_review)
 
-        print("\n[HASIL] Kode diterima dan masuk memory Kumar.")
+        runtime = {}
+        if isinstance(best_review, dict):
+            runtime = best_review.get("runtime_test", {}) or {}
+
+        runtime_ok = (
+            runtime.get("enabled") is True
+            and runtime.get("passed") is True
+        )
+
+        if runtime_ok:
+            status = "accepted_runtime_memory"
+            save_code_memory(task, best_code, best_review)
+            print("\n[HASIL] Kode diterima dan masuk memory Kumar.")
+        else:
+            status = "accepted_no_memory"
+            print("\n[HASIL] Kode lulus review, tapi TIDAK masuk memory Kumar.")
+            print("Alasan: tidak ada runtime test yang cocok dan lulus.")
+            print("Kode hanya disimpan sebagai last_code untuk dilihat, bukan sebagai pengalaman sukses.")
     else:
         status = "failed_but_logged"
 
