@@ -1,2 +1,78 @@
+# secrets
 .env
-memory_guru.json
+
+# python cache
+__pycache__/
+*.pyc
+
+# runtime brain
+brain.json
+brain_gen.json
+brain_gen_best.json
+brain_gen_last.json
+
+# runtime memory
+memory_guru.jsonl
+memory_koreksi.jsonl
+knowledge_memory.jsonl
+reflection_log.jsonl
+verifier_log.jsonl
+label_merge.jsonl
+
+# backup/runtime folders
+backup_brain/
+old_broken_data/
+
+# generative dataset
+gen_dataset.jsonl
+gen_train_log.jsonl
+imagination_pool.jsonl
+
+# coder memory
+code_memory.jsonl
+code_tasks.jsonl
+
+# local models
+models/
+*.gguf
+
+coder_arena_log.jsonl
+last_kumar_code.py
+
+coder_arena_log.jsonl
+code_lessons.jsonl
+last_kumar_code.py
+code_memory.jsonl
+
+.env.local
+.env
+
+code_mistakes.jsonllast_mimo_full.json
+last_mimo_raw.txt
+code_memory.backup.jsonl
+data/
+output.jsonl
+
+.env
+.env.local
+
+last_mimo_full.json
+last_mimo_raw.txt
+last_kumar_code.py
+
+coder/curl.txt
+curl.txt
+
+code_memory.jsonl
+code_memory.backup.jsonl
+code_lessons.jsonl
+code_mistakes.jsonl
+coder_arena_log.jsonl
+
+data/
+output.jsonl
+.env.brain
+
+*.backup_*.jsonl
+coder/*.backup_*.py
+brain_proxy.py
