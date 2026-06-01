@@ -71,3 +71,4 @@ coder_arena_log.jsonl
 
 data/
 output.jsonl
+.env.brain

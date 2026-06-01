@@ -192,6 +192,23 @@ def runtime_test_curl_extract_url(task, code):
         "stdout": "semua case lulus"
     }
 
+def is_curl_analyze_structure_task(task):
+    """
+    Deteksi task Level 2: analisa struktur curl.
+    """
+    task_lower = (task or "").lower()
+
+    return (
+        "curl" in task_lower
+        and "shlex.split" in task_lower
+        and "method=" in task_lower
+        and "url=" in task_lower
+        and "headers=" in task_lower
+        and "has_authorization=" in task_lower
+        and "has_cookie=" in task_lower
+        and "has_body=" in task_lower
+    )
+
 def runtime_test_curl_analyze_structure(task, code):
     """
     Runtime test Level 2:
@@ -302,6 +319,117 @@ def runtime_test_curl_analyze_structure(task, code):
                 f"stdout={stdout}, "
                 f"stderr={stderr}"
             )
+
+        return {
+            "enabled": True,
+            "passed": False,
+            "notes": " | ".join(errors[-3:])
+        }
+
+def is_curl_header_count_task(task):
+    """
+    Level 2A: hanya hitung jumlah header dari curl.
+    Jangan masuk converter output.py.
+    """
+    t = (task or "").lower()
+
+    return (
+        ("curl" in t or "curl.txt" in t)
+        and (
+            "hitung jumlah header" in t
+            or "headers=<jumlah>" in t
+            or "print headers=" in t
+        )
+        and "output.py" not in t
+        and "requests" not in t
+        and "ubah menjadi" not in t
+        and "convert" not in t
+        and "converter" not in t
+    )
+
+
+def runtime_test_curl_header_count(task, code_text):
+    """
+    Test kecil: candidate harus print HEADERS=2.
+    --header-file tidak boleh ikut dihitung.
+    """
+    if not is_curl_header_count_task(task):
+        return {"enabled": False}
+
+    import ast
+    import subprocess
+    import tempfile
+    from pathlib import Path
+
+    # Jangan sampai candidate benar-benar menjalankan request internet.
+    try:
+        tree = ast.parse(code_text or "")
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                func = node.func
+                if isinstance(func, ast.Attribute):
+                    if func.attr in ["get", "post", "put", "delete", "patch", "request"]:
+                        value = func.value
+                        if isinstance(value, ast.Name) and value.id == "requests":
+                            return {
+                                "enabled": True,
+                                "passed": False,
+                                "notes": "Candidate mencoba menjalankan requests.* padahal task hanya hitung header."
+                            }
+    except Exception:
+        pass
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+
+        curl_file = tmp_path / "curl.txt"
+        curl_file.write_text(
+            "curl 'https://example.com/api' "
+            "-H 'accept: application/json' "
+            "--header 'user-agent: KumarTest' "
+            "--header-file ignored.txt\n",
+            encoding="utf-8"
+        )
+
+        script_path = tmp_path / "candidate.py"
+        script_path.write_text(code_text or "", encoding="utf-8")
+
+        commands = [
+            ["python", str(script_path), "curl.txt"],
+            ["python", str(script_path), "--input", "curl.txt"],
+            ["python", str(script_path)],
+        ]
+
+        errors = []
+
+        for cmd in commands:
+            try:
+                result = subprocess.run(
+                    cmd,
+                    cwd=tmp_path,
+                    capture_output=True,
+                    text=True,
+                    timeout=20
+                )
+            except Exception as e:
+                errors.append(str(e))
+                continue
+
+            if result.returncode != 0:
+                errors.append(result.stderr.strip() or result.stdout.strip())
+                continue
+
+            stdout_norm = result.stdout.lower().replace(" ", "")
+
+            if "headers=2" in stdout_norm:
+                return {
+                    "enabled": True,
+                    "passed": True,
+                    "notes": "Runtime test HEADERS lulus: -H dan --header dihitung, --header-file tidak ikut.",
+                    "stdout": result.stdout.strip()
+                }
+
+            errors.append("stdout salah: " + result.stdout.strip())
 
         return {
             "enabled": True,

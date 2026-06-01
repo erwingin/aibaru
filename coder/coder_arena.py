@@ -287,6 +287,20 @@ def save_code_mistake(task, code, review):
 def run_runtime_test(task, code):
     task_lower = (task or "").lower()
     code_text = code or ""
+
+    # Runtime test kecil Level 2A: hitung HEADERS saja.
+    # Ini harus dicek sebelum runtime converter output.py.
+    try:
+        from runtime_tests import runtime_test_curl_header_count
+        header_count_result = runtime_test_curl_header_count(task, code_text)
+        if header_count_result.get("enabled"):
+            return header_count_result
+    except Exception as e:
+        return {
+            "enabled": True,
+            "passed": False,
+            "notes": f"Runtime test HEADERS error: {e}"
+        }
         # Runtime test level 1: curl.txt -> tampilkan URL saja.
     curl_url_result = runtime_test_curl_extract_url(task, code_text)
     if curl_url_result is not None:
@@ -298,7 +312,19 @@ def run_runtime_test(task, code):
     # ==================================================
     # RUNTIME TEST: CURL TO REQUESTS CONVERTER
     # ==================================================
-    if "curl" in task_lower or "curl.txt" in task_lower:
+    is_curl_converter_task = (
+        ("curl" in task_lower or "curl.txt" in task_lower)
+        and (
+            "output.py" in task_lower
+            or "requests" in task_lower
+            or "ubah menjadi script python requests" in task_lower
+            or "convert" in task_lower
+            or "converter" in task_lower
+            or "simpan ke output" in task_lower
+        )
+    )
+
+    if is_curl_converter_task:
         import ast
 
         def candidate_executes_requests(source_code):
@@ -430,7 +456,21 @@ def run_runtime_test(task, code):
     # ==================================================
     # RUNTIME TEST: TXT CLEANER
     # ==================================================
-    if "input.txt" in task_lower or "clean.txt" in task_lower or ".txt" in task_lower:
+    is_txt_clean_task = (
+        "clean.txt" in task_lower
+        or (
+            "input.txt" in task_lower
+            and (
+                "bersih" in task_lower
+                or "clean" in task_lower
+                or "hapus" in task_lower
+                or "normalisasi" in task_lower
+                or "rapikan" in task_lower
+            )
+        )
+    )
+
+    if is_txt_clean_task:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
 
@@ -930,6 +970,41 @@ def block_repeated_mistake(task, code):
             if bad_equal_split and not good_equal_split:
                 blocked.append("Kumar memakai split('=')[1] untuk --url=, ini memotong URL query. Gunakan split('=', 1)[1].")
 
+    # Gate Level 2A: hitung header curl harus pakai token dari shlex.split, bukan splitlines/readlines.
+    is_header_count_task = (
+        ("curl" in task_lower or "curl.txt" in task_lower)
+        and (
+            "hitung jumlah header" in task_lower
+            or "headers=<jumlah>" in task_lower
+            or "print headers=" in task_lower
+        )
+    )
+
+    if is_header_count_task:
+        has_shlex_split = "shlex.split(" in code_lower
+        # splitlines boleh dipakai untuk menggabungkan curl multiline
+        # sebelum shlex.split. Yang dilarang adalah menghitung header
+        # dengan readlines/for line.
+        uses_line_parser = (
+            ".readlines()" in code_lower
+            or "for line in" in code_lower
+        )
+        bad_header_startswith = (
+            "startswith('-h')" in code_lower
+            or 'startswith("-h")' in code_lower
+            or "startswith('--header')" in code_lower
+            or 'startswith("--header")' in code_lower
+        )
+
+        if not has_shlex_split:
+            blocked.append("Task hitung header curl wajib memakai shlex.split pada isi curl.txt.")
+
+        if uses_line_parser:
+            blocked.append("Jangan hitung header dari baris/splitlines/readlines. Hitung dari token hasil shlex.split.")
+
+        if bad_header_startswith:
+            blocked.append("Jangan pakai startswith untuk header. Hitung hanya token yang persis '-H' atau '--header'.")
+
         if "url tidak ditemukan" in task_lower and "url tidak ditemukan" not in code_lower:
             blocked.append("Kumar belum menampilkan pesan URL tidak ditemukan saat URL kosong.")
 
@@ -1377,6 +1452,42 @@ def auto_patch_common_bugs(task, code):
         fixed = fixed.replace("split('=')[1]", "split('=', 1)[1]")
         fixed = fixed.replace('split("=")[1]', 'split("=", 1)[1]')
 
+    if "curl" in task_lower and ("header" in task_lower or "headers=" in task_lower):
+        fixed = fixed.replace(
+            "line.startswith('-H') or line.startswith('--header')",
+            "line == '-H' or line == '--header'"
+        )
+        fixed = fixed.replace(
+            'line.startswith("-H") or line.startswith("--header")',
+            'line == "-H" or line == "--header"'
+        )
+        fixed = fixed.replace(
+            "token.startswith('-H') or token.startswith('--header')",
+            "token == '-H' or token == '--header'"
+        )
+        fixed = fixed.replace(
+            'token.startswith("-H") or token.startswith("--header")',
+            'token == "-H" or token == "--header"'
+        )
+
+        fixed = fixed.replace(
+            "token == '-H' or token.startswith('--header')",
+            "token == '-H' or token == '--header'"
+        )
+        fixed = fixed.replace(
+            'token == "-H" or token.startswith("--header")',
+            'token == "-H" or token == "--header"'
+        )
+
+        fixed = fixed.replace(
+            "line == '-H' or line.startswith('--header')",
+            "line == '-H' or line == '--header'"
+        )
+        fixed = fixed.replace(
+            'line == "-H" or line.startswith("--header")',
+            'line == "-H" or line == "--header"'
+        )
+
     if "shlex.split" in fixed and "import shlex" not in fixed:
         lines = fixed.splitlines()
         insert_at = 0
@@ -1462,7 +1573,8 @@ TUGAS USER ASLI:
     print("\n[1] Kumar Coder membuat kode pertama berdasarkan task plan...")
     current_code = ask_coder(coder_task)
     current_code = clean_code_output(current_code)
-    current_code = auto_patch_common_bugs(task, current_code)
+    # MODE JUJUR: auto-patch dimatikan
+    # current_code = auto_patch_common_bugs(task, current_code)
 
     if is_backend_error_code(current_code):
         print("\n[STOP] Backend lokal error. Ini bukan kesalahan Kumar.")
@@ -1578,7 +1690,8 @@ TUGAS USER ASLI:
             previous_code=current_code,
         )
         revised_code = clean_code_output(revised_code)
-        revised_code = auto_patch_common_bugs(task, revised_code)
+        # MODE JUJUR: auto-patch dimatikan
+        # revised_code = auto_patch_common_bugs(task, revised_code)
 
         if is_backend_error_code(revised_code):
             print("\n[REVISI ERROR] Backend lokal error saat revisi. Revisi ini diabaikan.")
@@ -1592,7 +1705,8 @@ TUGAS USER ASLI:
             forced_task = build_forced_rewrite_task(task, task_plan, current_review)
             revised_code = ask_coder(forced_task)
             revised_code = clean_code_output(revised_code)
-            revised_code = auto_patch_common_bugs(task, revised_code)
+            # MODE JUJUR: auto-patch dimatikan
+        # revised_code = auto_patch_common_bugs(task, revised_code)
 
             if is_backend_error_code(revised_code):
                 print("\n[FORCED REWRITE ERROR] Backend lokal error. Revisi paksa diabaikan.")
