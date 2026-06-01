@@ -72,3 +72,7 @@ coder_arena_log.jsonl
 data/
 output.jsonl
 .env.brain
+
+*.backup_*.jsonl
+coder/*.backup_*.py
+brain_proxy.py
